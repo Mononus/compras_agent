@@ -158,6 +158,44 @@ async function iniciar() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // Lista todos los grupos donde está el bot, con su JID.
+  // Sirve para configurar TARGET_GROUP sin tener que esperar un mensaje.
+  async function listarGrupos() {
+    // Las "init queries" de Baileys a veces tardan; reintentamos un par de veces.
+    for (let intento = 1; intento <= 3; intento++) {
+      try {
+        const grupos = await sock.groupFetchAllParticipating();
+        const entradas = Object.values(grupos);
+        if (entradas.length === 0) {
+          console.log(
+            "\n📭 El bot no está en ningún grupo todavía.\n" +
+              "   Agregá este número al grupo de compras y reiniciá.\n"
+          );
+          return;
+        }
+        console.log("\n📋 Grupos donde está el bot:\n");
+        for (const g of entradas) {
+          console.log(`   ${g.subject}`);
+          console.log(`   TARGET_GROUP=${g.id}\n`);
+        }
+        console.log(
+          "👉 Copiá la línea TARGET_GROUP= del grupo que quieras al archivo .env y reiniciá.\n"
+        );
+        return;
+      } catch (err) {
+        if (intento === 3) {
+          console.log(
+            "\n⚠️  No pude listar los grupos (WhatsApp tardó en responder).\n" +
+              "   Alternativa: que alguien MÁS (no el número del bot) escriba en el grupo\n" +
+              "   y el JID va a aparecer acá abajo.\n"
+          );
+        } else {
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
+    }
+  }
+
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
@@ -173,9 +211,10 @@ async function iniciar() {
       console.log("✅ Conectado a WhatsApp.");
       if (!TARGET_GROUP) {
         console.log(
-          "⚠️  TARGET_GROUP no está configurado: el bot responderá en cualquier chat.\n" +
-            "   Mandá un mensaje en el grupo objetivo y copiá el JID que aparece abajo al .env."
+          "⚠️  TARGET_GROUP no está configurado: el bot responderá en cualquier chat."
         );
+        // Esperamos unos segundos a que WhatsApp termine de sincronizar
+        setTimeout(listarGrupos, 5000);
       }
     }
   });
