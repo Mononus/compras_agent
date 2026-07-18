@@ -1,0 +1,5 @@
+node_modules/
+auth/
+lista.json
+.env
+.DS_Store
