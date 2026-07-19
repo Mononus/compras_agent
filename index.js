@@ -220,7 +220,30 @@ async function iniciar() {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+    // DIAGNÓSTICO: mostramos todo lo que llega, antes de cualquier filtro.
+    console.log(`\n📥 messages.upsert — type="${type}", ${messages.length} mensaje(s)`);
+
+    for (const msg of messages) {
+      const jid = msg.key.remoteJid || "(sin jid)";
+      const texto = textoDelMensaje(msg);
+      console.log(
+        `   jid="${jid}" fromMe=${msg.key.fromMe} ` +
+          `tipo=${Object.keys(msg.message || {}).join(",") || "(vacío)"} ` +
+          `texto="${texto.slice(0, 60)}"`
+      );
+      if (TARGET_GROUP) {
+        console.log(
+          `   ¿coincide con TARGET_GROUP? ${jid === TARGET_GROUP ? "SÍ ✅" : "NO ❌"}` +
+            (jid !== TARGET_GROUP ? `  (esperado: "${TARGET_GROUP}")` : "")
+        );
+      }
+    }
+
+    if (type !== "notify") {
+      console.log(`   ↳ ignorado: type distinto de "notify"`);
+      return;
+    }
+
     for (const msg of messages) {
       if (!msg.message || msg.key.fromMe) continue;
       const jid = msg.key.remoteJid;
@@ -242,11 +265,13 @@ async function iniciar() {
 
       try {
         const respuesta = await procesar(texto, autor);
+        console.log(`   ↳ procesar("${texto.slice(0, 40)}") → ${respuesta ? "respuesta generada" : "null (sin prefijo)"}`);
         if (respuesta) {
           await sock.sendMessage(jid, { text: respuesta }, { quoted: msg });
+          console.log(`   ↳ ✅ respuesta enviada a ${jid}`);
         }
       } catch (err) {
-        console.error("Error procesando mensaje:", err);
+        console.error("   ↳ ❌ Error procesando/enviando:", err);
       }
     }
   });
