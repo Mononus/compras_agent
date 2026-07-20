@@ -25,16 +25,36 @@ if (!process.env.LOG_BAILEYS) {
     "Key used already",
     "Session error",
     "Failed to decrypt",
+    "Bad MAC",
+    "verifyMAC",
+    "session_cipher.js",
+    "queue_job.js",
+    "MessageCounterError",
+    "PreKeyError",
   ];
   const logOriginal = console.log;
   const warnOriginal = console.warn;
-  const esRuido = (args) =>
-    typeof args[0] === "string" && RUIDO.some((r) => args[0].includes(r));
+  const errorOriginal = console.error;
+
+  // El ruido puede venir como string o como Error (stack traces de libsignal).
+  const esRuido = (args) => {
+    for (const a of args) {
+      const s = typeof a === "string" ? a : a?.message || a?.stack || "";
+      if (typeof s === "string" && RUIDO.some((r) => s.includes(r))) return true;
+    }
+    return false;
+  };
+
   console.log = (...args) => {
     if (!esRuido(args)) logOriginal(...args);
   };
   console.warn = (...args) => {
     if (!esRuido(args)) warnOriginal(...args);
+  };
+  // libsignal usa console.error para el ruido de sesiones. Nuestros mensajes
+  // propios (💥, ⚠️, ❌) no matchean los patrones, así que pasan igual.
+  console.error = (...args) => {
+    if (!esRuido(args)) errorOriginal(...args);
   };
 }
 
