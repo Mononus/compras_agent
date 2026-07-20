@@ -245,7 +245,10 @@ async function iniciar() {
     }
 
     for (const msg of messages) {
-      if (!msg.message || msg.key.fromMe) continue;
+      if (!msg.message) continue;
+      // Nota: NO descartamos fromMe. El bot está vinculado al número personal,
+      // así que los mensajes propios también tienen que poder dar órdenes.
+      // No hay riesgo de loop: las respuestas del bot nunca empiezan con el prefijo.
       const jid = msg.key.remoteJid;
       if (!jid) continue;
 
