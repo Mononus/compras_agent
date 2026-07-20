@@ -131,6 +131,21 @@ async function procesar(textoCrudo, autor) {
 
 // ---------- Extraer texto de un mensaje de WhatsApp ----------
 
+// Antigüedad máxima de un mensaje para que el bot lo procese (segundos).
+// Evita que la sincronización de historial re-ejecute comandos viejos al reconectar.
+const MAX_ANTIGUEDAD_SEG = 90;
+
+// El timestamp puede venir como number, string o Long de protobuf.
+function timestampDe(msg) {
+  const t = msg.messageTimestamp;
+  if (!t) return 0;
+  if (typeof t === "number") return t;
+  if (typeof t === "string") return parseInt(t, 10) || 0;
+  if (typeof t.toNumber === "function") return t.toNumber();
+  if (typeof t.low === "number") return t.low;
+  return 0;
+}
+
 function textoDelMensaje(msg) {
   const m = msg.message;
   if (!m) return "";
@@ -239,8 +254,10 @@ async function iniciar() {
       }
     }
 
-    if (type !== "notify") {
-      console.log(`   ↳ ignorado: type distinto de "notify"`);
+    // "notify" = mensaje entrante de otro.
+    // "append" = mensaje enviado desde el propio celu vinculado (y sync de historial).
+    if (type !== "notify" && type !== "append") {
+      console.log(`   ↳ ignorado: type "${type}" no procesable`);
       return;
     }
 
@@ -263,6 +280,14 @@ async function iniciar() {
 
       const texto = textoDelMensaje(msg);
       if (!texto) continue;
+
+      // Descartamos mensajes viejos (sync de historial), no comandos en vivo.
+      const ts = timestampDe(msg);
+      const antiguedad = ts ? Math.floor(Date.now() / 1000) - ts : 0;
+      if (antiguedad > MAX_ANTIGUEDAD_SEG) {
+        console.log(`   ↳ ignorado: mensaje de hace ${antiguedad}s (sync de historial)`);
+        continue;
+      }
 
       const autor = (msg.key.participant || jid).split("@")[0];
 
