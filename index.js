@@ -381,6 +381,19 @@ process.on("unhandledRejection", (e) => {
   console.error("⚠️  Promesa rechazada sin manejar (se ignora):", msg);
 });
 
+// Si algo revienta de forma sincrónica, lo dejamos registrado y salimos limpio.
+// systemd (Restart=always) levanta el proceso de nuevo en 10s.
+process.on("uncaughtException", (e) => {
+  console.error("\n💥 EXCEPCIÓN NO CAPTURADA — el proceso se reinicia:");
+  console.error(e?.stack || e);
+  process.exit(1);
+});
+
+// Deja constancia de cualquier salida, para poder diagnosticar caídas.
+process.on("exit", (code) => {
+  console.error(`\n🔚 Proceso terminando con código ${code} — ${new Date().toISOString()}`);
+});
+
 iniciar().catch((e) => {
   console.error("Fallo al iniciar:", e);
   process.exit(1);

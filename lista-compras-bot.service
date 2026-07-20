@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/lista-compras-bot
+WorkingDirectory=/home/ubuntu/compras_agent
 ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=10
