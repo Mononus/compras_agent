@@ -160,6 +160,29 @@ function textoDelMensaje(msg) {
 
 // ---------- Conexión a WhatsApp ----------
 
+// Evita que se apilen sockets superpuestos si llegan varios "close" seguidos.
+let reconectando = false;
+let intentosReconexion = 0;
+
+function programarReconexion(motivo) {
+  if (reconectando) {
+    console.log(`   (ya hay una reconexión en curso, se ignora: ${motivo})`);
+    return;
+  }
+  reconectando = true;
+  intentosReconexion++;
+  // Backoff: 3s, 6s, 12s, 24s… con techo de 60s.
+  const espera = Math.min(3000 * 2 ** (intentosReconexion - 1), 60000);
+  console.log(`🔄 Reconectando en ${espera / 1000}s (intento ${intentosReconexion}) — ${motivo}`);
+  setTimeout(() => {
+    reconectando = false;
+    iniciar().catch((e) => {
+      console.error("Error al reconectar:", e?.message || e);
+      programarReconexion("falló el intento anterior");
+    });
+  }, espera);
+}
+
 async function iniciar() {
   const { state, saveCreds } = await useMultiFileAuthState("./auth");
   const { version } = await fetchLatestBaileysVersion();
@@ -219,10 +242,30 @@ async function iniciar() {
     }
     if (connection === "close") {
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      const reconectar = code !== DisconnectReason.loggedOut;
-      console.log("Conexión cerrada. Reconectando:", reconectar);
-      if (reconectar) iniciar();
+
+      if (code === DisconnectReason.loggedOut) {
+        console.log(
+          "\n🚪 La sesión fue cerrada desde el celular.\n" +
+            "   Borrá la carpeta auth/ y volvé a escanear el QR:\n" +
+            "   rm -rf auth && npm start\n"
+        );
+        process.exit(1);
+      }
+
+      if (code === DisconnectReason.connectionReplaced) {
+        console.log(
+          "\n⛔ OTRA INSTANCIA DEL BOT TOMÓ LA SESIÓN.\n" +
+            "   Solo puede correr una a la vez con las mismas credenciales.\n" +
+            "   Revisá si quedó el servicio de systemd corriendo:\n" +
+            "     sudo systemctl status lista-compras-bot\n" +
+            "   Este proceso se cierra para no pelear por la sesión.\n"
+        );
+        process.exit(1);
+      }
+
+      programarReconexion(`conexión cerrada (código ${code})`);
     } else if (connection === "open") {
+      intentosReconexion = 0; // reset del backoff
       console.log("✅ Conectado a WhatsApp.");
       if (!TARGET_GROUP) {
         console.log(
@@ -304,6 +347,13 @@ async function iniciar() {
     }
   });
 }
+
+// Baileys lanza rechazos transitorios (ej. 428 "Connection Closed") desde su
+// lógica interna de reconexión. Los logueamos en vez de dejar morir el proceso.
+process.on("unhandledRejection", (e) => {
+  const msg = e?.output?.payload?.message || e?.message || e;
+  console.error("⚠️  Promesa rechazada sin manejar (se ignora):", msg);
+});
 
 iniciar().catch((e) => {
   console.error("Fallo al iniciar:", e);
