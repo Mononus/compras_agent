@@ -14,6 +14,29 @@ import pino from "pino";
 import * as store from "./store.js";
 import { interpretar, claudeDisponible } from "./llm.js";
 
+// libsignal escribe ruido de sesiones con console.log directo (no pasa por pino).
+// Lo filtramos para poder leer la consola. Con LOG_BAILEYS=warn se muestra todo.
+if (!process.env.LOG_BAILEYS) {
+  const RUIDO = [
+    "Closing open session",
+    "Closing session",
+    "SessionEntry",
+    "Invalid PreKey",
+    "Key used already",
+    "Session error",
+  ];
+  const logOriginal = console.log;
+  const warnOriginal = console.warn;
+  const esRuido = (args) =>
+    typeof args[0] === "string" && RUIDO.some((r) => args[0].includes(r));
+  console.log = (...args) => {
+    if (!esRuido(args)) logOriginal(...args);
+  };
+  console.warn = (...args) => {
+    if (!esRuido(args)) warnOriginal(...args);
+  };
+}
+
 const PREFIX = process.env.BOT_PREFIX || "!";
 const TARGET_GROUP = process.env.TARGET_GROUP || ""; // JID del grupo, ej "12036...@g.us"
 // Baileys es muy ruidoso: timeouts de init queries, fallos de descifrado de
