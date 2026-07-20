@@ -24,6 +24,7 @@ if (!process.env.LOG_BAILEYS) {
     "Invalid PreKey",
     "Key used already",
     "Session error",
+    "Failed to decrypt",
   ];
   const logOriginal = console.log;
   const warnOriginal = console.warn;
@@ -38,35 +39,34 @@ if (!process.env.LOG_BAILEYS) {
 }
 
 const PREFIX = process.env.BOT_PREFIX || "!";
-const TARGET_GROUP = process.env.TARGET_GROUP || ""; // JID del grupo, ej "12036...@g.us"
-// Baileys es muy ruidoso: timeouts de init queries, fallos de descifrado de
-// mensajes viejos, etc., casi todo inofensivo. Por defecto lo silenciamos.
-// Para ver su salida interna: LOG_BAILEYS=warn npm start
+const TARGET_GROUP = process.env.TARGET_GROUP || "";
+// Por defecto NO se exige prefijo: el grupo es dedicado a compras.
+const REQUIERE_PREFIJO = process.env.REQUIERE_PREFIJO === "true";
+// Mensajes más largos que esto no se consideran comandos (evita gastar API).
+const LARGO_MAXIMO = 300;
 const logger = pino({ level: process.env.LOG_BAILEYS || "silent" });
 
 // ---------- Formato de respuestas ----------
 
 function formatearLista(items) {
-  if (items.length === 0) return "🛒 La lista está vacía. ¡Todo comprado!";
+  if (items.length === 0) return "🛒 La lista está vacía.";
   const lineas = items.map((i, n) => `${n + 1}. ${i.texto}`);
   return `🛒 *Lista de compras* (${items.length})\n\n${lineas.join("\n")}`;
 }
 
 const AYUDA = `🛒 *Bot de lista de compras*
 
-Comandos (empezá con \`${PREFIX}\`):
-• \`${PREFIX}agregar leche, pan, huevos\` — suma cosas
-• \`${PREFIX}lista\` — muestra lo que falta
-• \`${PREFIX}compre leche\` — marca como comprado
-• \`${PREFIX}borrar pan\` — saca algo sin comprarlo
-• \`${PREFIX}vaciar\` — limpia toda la lista
-• \`${PREFIX}ayuda\` — muestra esto${
-  claudeDisponible
-    ? `\n\nTambién entiendo lenguaje natural: \`${PREFIX} falta papel y comprá yogur\``
-    : ""
-}`;
+Escribí normalmente y yo me encargo:
+• \`leche, pan\` — los agrego a la lista
+• \`falta papel higiénico\` — lo agrego
+• \`ya compré la leche\` — la marco como comprada
+• \`sacá el pan\` — lo quito sin comprarlo
+• \`qué falta\` — te muestro la lista
+• \`vaciar\` — limpio toda la lista
 
-// ---------- Parseo de comandos explícitos ----------
+Cuando agrego o marco algo reacciono con un emoji en vez de escribir, así no lleno el grupo.`;
+
+// ---------- Comandos explícitos (rápidos, sin gastar API) ----------
 
 function separarItems(texto) {
   return texto
@@ -75,93 +75,112 @@ function separarItems(texto) {
     .filter(Boolean);
 }
 
-// Devuelve el texto de respuesta o null si no reconoce el comando.
-async function procesar(textoCrudo, autor) {
-  const texto = textoCrudo.trim();
-  if (!texto.startsWith(PREFIX)) return null;
+const COMANDOS = {
+  ayuda: ["ayuda", "help", "comandos"],
+  listar: ["lista", "l", "ver"],
+  agregar: ["agregar", "add", "sumar", "sumá", "suma", "anotar", "anota", "+"],
+  comprado: ["compre", "compré", "listo", "hecho", "-"],
+  borrar: ["borrar", "quitar", "sacar", "sacá", "saca", "eliminar"],
+  vaciar: ["vaciar", "limpiar", "reset"],
+};
 
-  const sinPrefix = texto.slice(PREFIX.length).trim();
-  if (!sinPrefix) return AYUDA;
+// Resultados posibles:
+//   { tipo: "texto", texto }      → responde con un mensaje
+//   { tipo: "reaccion", emoji }   → reacciona al mensaje con un emoji
+//   null                          → no hace nada
+function ejecutar(accion, items, autor) {
+  switch (accion) {
+    case "ayuda":
+      return { tipo: "texto", texto: AYUDA };
 
-  const [comandoRaw, ...resto] = sinPrefix.split(/\s+/);
-  const comando = comandoRaw.toLowerCase();
-  const args = resto.join(" ").trim();
+    case "listar":
+      return { tipo: "texto", texto: formatearLista(store.pendientes()) };
 
-  // Comandos explícitos (rápidos, sin llamar a la API)
-  if (["ayuda", "help", "?"].includes(comando)) return AYUDA;
-
-  if (["lista", "l", "ver", "que", "qué"].includes(comando)) {
-    return formatearLista(store.pendientes());
-  }
-
-  if (["agregar", "add", "sumar", "sumá", "suma", "anotar", "anota", "+"].includes(comando)) {
-    const items = separarItems(args);
-    if (items.length === 0) return `Decime qué agregar, ej: \`${PREFIX}agregar leche, pan\``;
-    const nuevos = store.agregar(items, autor);
-    if (nuevos.length === 0) return "Eso ya estaba en la lista 👍";
-    return `✅ Agregado: ${nuevos.map((i) => i.texto).join(", ")}\n\n${formatearLista(store.pendientes())}`;
-  }
-
-  if (["compre", "compré", "listo", "ok", "hecho", "-"].includes(comando)) {
-    const items = separarItems(args);
-    if (items.length === 0) return `Decime qué compraste, ej: \`${PREFIX}compre leche\``;
-    const afectados = store.marcarComprado(items);
-    if (afectados.length === 0) return "No encontré eso en la lista 🤔";
-    return `🎉 Comprado: ${afectados.map((i) => i.texto).join(", ")}\n\n${formatearLista(store.pendientes())}`;
-  }
-
-  if (["borrar", "quitar", "sacar", "sacá", "saca", "eliminar"].includes(comando)) {
-    const items = separarItems(args);
-    if (items.length === 0) return `Decime qué borrar, ej: \`${PREFIX}borrar pan\``;
-    const borrados = store.borrar(items);
-    if (borrados.length === 0) return "No encontré eso en la lista 🤔";
-    return `🗑️ Borrado: ${borrados.map((i) => i.texto).join(", ")}\n\n${formatearLista(store.pendientes())}`;
-  }
-
-  if (["vaciar", "limpiar", "reset"].includes(comando)) {
-    store.vaciar(false);
-    return "🧹 Lista vaciada.";
-  }
-
-  // Si no matcheó ningún comando explícito, probamos con Claude (si está)
-  if (claudeDisponible) {
-    const intent = await interpretar(sinPrefix);
-    if (intent && intent.accion !== "ninguna") {
-      switch (intent.accion) {
-        case "agregar": {
-          const nuevos = store.agregar(intent.items, autor);
-          if (nuevos.length === 0) return "Eso ya estaba en la lista 👍";
-          return `✅ Agregado: ${nuevos.map((i) => i.texto).join(", ")}\n\n${formatearLista(store.pendientes())}`;
-        }
-        case "comprado": {
-          const afectados = store.marcarComprado(intent.items);
-          if (afectados.length === 0) return "No encontré eso en la lista 🤔";
-          return `🎉 Comprado: ${afectados.map((i) => i.texto).join(", ")}\n\n${formatearLista(store.pendientes())}`;
-        }
-        case "borrar": {
-          const borrados = store.borrar(intent.items);
-          if (borrados.length === 0) return "No encontré eso en la lista 🤔";
-          return `🗑️ Borrado: ${borrados.map((i) => i.texto).join(", ")}\n\n${formatearLista(store.pendientes())}`;
-        }
-        case "listar":
-          return formatearLista(store.pendientes());
-        case "vaciar":
-          store.vaciar(false);
-          return "🧹 Lista vaciada.";
-      }
+    case "agregar": {
+      if (items.length === 0) return null;
+      const nuevos = store.agregar(items, autor);
+      // Si ya estaba todo, igual confirmamos con un emoji distinto.
+      return { tipo: "reaccion", emoji: nuevos.length > 0 ? "✅" : "👍" };
     }
-  }
 
-  return `No entendí. Escribí \`${PREFIX}ayuda\` para ver los comandos.`;
+    case "comprado": {
+      if (items.length === 0) return null;
+      const afectados = store.marcarComprado(items);
+      return { tipo: "reaccion", emoji: afectados.length > 0 ? "🎉" : "🤔" };
+    }
+
+    case "borrar": {
+      if (items.length === 0) return null;
+      const borrados = store.borrar(items);
+      return { tipo: "reaccion", emoji: borrados.length > 0 ? "🗑️" : "🤔" };
+    }
+
+    case "vaciar":
+      store.vaciar(false);
+      return { tipo: "reaccion", emoji: "🧹" };
+
+    default:
+      return null;
+  }
 }
 
-// ---------- Extraer texto de un mensaje de WhatsApp ----------
+// Intenta resolver el mensaje con las palabras clave, sin llamar a la API.
+function comandoExplicito(texto, autor) {
+  const [comandoRaw, ...resto] = texto.split(/\s+/);
+  const comando = comandoRaw.toLowerCase().replace(/[¿?¡!.,]/g, "");
+  const args = resto.join(" ").trim();
 
-// Antigüedad máxima de un mensaje para que el bot lo procese (segundos).
-// Evita que la sincronización de historial re-ejecute comandos viejos al reconectar.
+  for (const [accion, alias] of Object.entries(COMANDOS)) {
+    if (!alias.includes(comando)) continue;
+    // "lista", "vaciar" y "ayuda" no necesitan argumentos.
+    if (["ayuda", "listar", "vaciar"].includes(accion)) {
+      return ejecutar(accion, [], autor);
+    }
+    const items = separarItems(args);
+    if (items.length === 0) {
+      return { tipo: "texto", texto: `Decime qué, ej: \`${comandoRaw} leche, pan\`` };
+    }
+    return ejecutar(accion, items, autor);
+  }
+  return undefined; // undefined = no matcheó ningún comando explícito
+}
+
+async function procesar(textoCrudo, autor) {
+  let texto = (textoCrudo || "").trim();
+  if (!texto) return null;
+
+  const tienePrefijo = texto.startsWith(PREFIX);
+  if (REQUIERE_PREFIJO && !tienePrefijo) return null;
+  if (tienePrefijo) {
+    texto = texto.slice(PREFIX.length).trim();
+    if (!texto) return { tipo: "texto", texto: AYUDA };
+  }
+
+  // 1) Palabras clave: instantáneo y gratis.
+  const explicito = comandoExplicito(texto, autor);
+  if (explicito !== undefined) return explicito;
+
+  // Mensajes muy largos difícilmente sean comandos: no gastamos API.
+  if (texto.length > LARGO_MAXIMO) return null;
+
+  // 2) Claude interpreta el lenguaje natural.
+  if (claudeDisponible) {
+    const intent = await interpretar(texto);
+    if (!intent || intent.accion === "ninguna") return null;
+    const accion = intent.accion === "listar" ? "listar" : intent.accion;
+    return ejecutar(accion, intent.items || [], autor);
+  }
+
+  // Sin Claude y sin comando reconocido: si venía con prefijo avisamos, si no callamos.
+  return tienePrefijo
+    ? { tipo: "texto", texto: `No entendí. Escribí \`${PREFIX}ayuda\`.` }
+    : null;
+}
+
+// ---------- Utilidades de mensajes ----------
+
 const MAX_ANTIGUEDAD_SEG = 90;
 
-// El timestamp puede venir como number, string o Long de protobuf.
 function timestampDe(msg) {
   const t = msg.messageTimestamp;
   if (!t) return 0;
@@ -186,18 +205,13 @@ function textoDelMensaje(msg) {
 
 // ---------- Conexión a WhatsApp ----------
 
-// Evita que se apilen sockets superpuestos si llegan varios "close" seguidos.
 let reconectando = false;
 let intentosReconexion = 0;
 
 function programarReconexion(motivo) {
-  if (reconectando) {
-    console.log(`   (ya hay una reconexión en curso, se ignora: ${motivo})`);
-    return;
-  }
+  if (reconectando) return;
   reconectando = true;
   intentosReconexion++;
-  // Backoff: 3s, 6s, 12s, 24s… con techo de 60s.
   const espera = Math.min(3000 * 2 ** (intentosReconexion - 1), 60000);
   console.log(`🔄 Reconectando en ${espera / 1000}s (intento ${intentosReconexion}) — ${motivo}`);
   setTimeout(() => {
@@ -222,19 +236,25 @@ async function iniciar() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  // Lista todos los grupos donde está el bot, con su JID.
-  // Sirve para configurar TARGET_GROUP sin tener que esperar un mensaje.
+  // IDs de mensajes que enviamos nosotros. Sin prefijo, el bot vería sus propias
+  // respuestas como comandos y entraría en loop. Esto lo corta de raíz.
+  const idsPropios = new Set();
+  function recordarPropio(id) {
+    if (!id) return;
+    idsPropios.add(id);
+    // Evitamos que el Set crezca sin límite.
+    if (idsPropios.size > 200) {
+      idsPropios.delete(idsPropios.values().next().value);
+    }
+  }
+
   async function listarGrupos() {
-    // Las "init queries" de Baileys a veces tardan; reintentamos un par de veces.
     for (let intento = 1; intento <= 3; intento++) {
       try {
         const grupos = await sock.groupFetchAllParticipating();
         const entradas = Object.values(grupos);
         if (entradas.length === 0) {
-          console.log(
-            "\n📭 El bot no está en ningún grupo todavía.\n" +
-              "   Agregá este número al grupo de compras y reiniciá.\n"
-          );
+          console.log("\n📭 El bot no está en ningún grupo todavía.\n");
           return;
         }
         console.log("\n📋 Grupos donde está el bot:\n");
@@ -242,22 +262,12 @@ async function iniciar() {
           console.log(`   ${g.subject}`);
           console.log(`   TARGET_GROUP=${g.id}\n`);
         }
-        console.log(
-          "👉 Copiá la línea TARGET_GROUP= del grupo que quieras al archivo .env y reiniciá.\n"
-        );
         return;
-      } catch (err) {
-        if (intento === 3) {
-          console.log(
-            "\n⚠️  No pude listar los grupos (WhatsApp tardó en responder).\n" +
-              "   Alternativa: que alguien MÁS (no el número del bot) escriba en el grupo\n" +
-              "   y el JID va a aparecer acá abajo.\n"
-          );
-        } else {
-          await new Promise((r) => setTimeout(r, 3000));
-        }
+      } catch {
+        if (intento < 3) await new Promise((r) => setTimeout(r, 3000));
       }
     }
+    console.log("\n⚠️  No pude listar los grupos.\n");
   }
 
   sock.ev.on("connection.update", (update) => {
@@ -270,126 +280,84 @@ async function iniciar() {
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
 
       if (code === DisconnectReason.loggedOut) {
-        console.log(
-          "\n🚪 La sesión fue cerrada desde el celular.\n" +
-            "   Borrá la carpeta auth/ y volvé a escanear el QR:\n" +
-            "   rm -rf auth && npm start\n"
-        );
+        console.log("\n🚪 Sesión cerrada desde el celular. Borrá auth/ y re-escaneá el QR.\n");
         process.exit(1);
       }
-
       if (code === DisconnectReason.connectionReplaced) {
         console.log(
-          "\n⛔ OTRA INSTANCIA DEL BOT TOMÓ LA SESIÓN.\n" +
-            "   Solo puede correr una a la vez con las mismas credenciales.\n" +
-            "   Revisá si quedó el servicio de systemd corriendo:\n" +
-            "     sudo systemctl status lista-compras-bot\n" +
-            "   Este proceso se cierra para no pelear por la sesión.\n"
+          "\n⛔ Otra instancia tomó la sesión. Solo puede correr una a la vez.\n" +
+            "   Revisá: sudo systemctl status lista-compras-bot\n"
         );
         process.exit(1);
       }
-
       programarReconexion(`conexión cerrada (código ${code})`);
     } else if (connection === "open") {
-      intentosReconexion = 0; // reset del backoff
+      intentosReconexion = 0;
       console.log("✅ Conectado a WhatsApp.");
+      console.log(
+        `   Modo: ${REQUIERE_PREFIJO ? `con prefijo "${PREFIX}"` : "sin prefijo"} | ` +
+          `Claude: ${claudeDisponible ? "activo" : "no configurado"}`
+      );
       if (!TARGET_GROUP) {
-        console.log(
-          "⚠️  TARGET_GROUP no está configurado: el bot responderá en cualquier chat."
-        );
-        // Esperamos unos segundos a que WhatsApp termine de sincronizar
+        console.log("⚠️  TARGET_GROUP vacío: el bot responde en cualquier chat.");
         setTimeout(listarGrupos, 5000);
       }
     }
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    // DIAGNÓSTICO: mostramos todo lo que llega, antes de cualquier filtro.
-    console.log(`\n📥 messages.upsert — type="${type}", ${messages.length} mensaje(s)`);
-
-    for (const msg of messages) {
-      const jid = msg.key.remoteJid || "(sin jid)";
-      const texto = textoDelMensaje(msg);
-      console.log(
-        `   jid="${jid}" fromMe=${msg.key.fromMe} ` +
-          `tipo=${Object.keys(msg.message || {}).join(",") || "(vacío)"} ` +
-          `texto="${texto.slice(0, 60)}"`
-      );
-      if (TARGET_GROUP) {
-        console.log(
-          `   ¿coincide con TARGET_GROUP? ${jid === TARGET_GROUP ? "SÍ ✅" : "NO ❌"}` +
-            (jid !== TARGET_GROUP ? `  (esperado: "${TARGET_GROUP}")` : "")
-        );
-      }
-    }
-
-    // "notify" = mensaje entrante de otro.
-    // "append" = mensaje enviado desde el propio celu vinculado (y sync de historial).
-    if (type !== "notify" && type !== "append") {
-      console.log(`   ↳ ignorado: type "${type}" no procesable`);
-      return;
-    }
+    if (type !== "notify" && type !== "append") return;
 
     for (const msg of messages) {
       if (!msg.message) continue;
-      // Nota: NO descartamos fromMe. El bot está vinculado al número personal,
-      // así que los mensajes propios también tienen que poder dar órdenes.
-      // No hay riesgo de loop: las respuestas del bot nunca empiezan con el prefijo.
       const jid = msg.key.remoteJid;
       if (!jid) continue;
 
-      const esGrupo = jid.endsWith("@g.us");
-      // Log del JID de grupo para facilitar la configuración inicial
-      if (esGrupo && !TARGET_GROUP) {
-        console.log(`📍 Mensaje en grupo con JID: ${jid}`);
-      }
-
-      // Si hay grupo objetivo, ignoramos todo lo demás
+      // Solo el grupo objetivo.
       if (TARGET_GROUP && jid !== TARGET_GROUP) continue;
+
+      // Nunca procesamos nuestras propias respuestas (protección anti-loop).
+      if (idsPropios.has(msg.key.id)) continue;
 
       const texto = textoDelMensaje(msg);
       if (!texto) continue;
 
-      // Descartamos mensajes viejos (sync de historial), no comandos en vivo.
+      // Descartamos historial viejo, no comandos en vivo.
       const ts = timestampDe(msg);
-      const antiguedad = ts ? Math.floor(Date.now() / 1000) - ts : 0;
-      if (antiguedad > MAX_ANTIGUEDAD_SEG) {
-        console.log(`   ↳ ignorado: mensaje de hace ${antiguedad}s (sync de historial)`);
-        continue;
-      }
+      if (ts && Math.floor(Date.now() / 1000) - ts > MAX_ANTIGUEDAD_SEG) continue;
 
       const autor = (msg.key.participant || jid).split("@")[0];
 
       try {
-        const respuesta = await procesar(texto, autor);
-        console.log(`   ↳ procesar("${texto.slice(0, 40)}") → ${respuesta ? "respuesta generada" : "null (sin prefijo)"}`);
-        if (respuesta) {
-          await sock.sendMessage(jid, { text: respuesta }, { quoted: msg });
-          console.log(`   ↳ ✅ respuesta enviada a ${jid}`);
+        const r = await procesar(texto, autor);
+        if (!r) continue;
+
+        if (r.tipo === "reaccion") {
+          await sock.sendMessage(jid, { react: { text: r.emoji, key: msg.key } });
+          console.log(`${r.emoji} "${texto.slice(0, 50)}" (de ${autor})`);
+        } else if (r.tipo === "texto") {
+          const enviado = await sock.sendMessage(jid, { text: r.texto }, { quoted: msg });
+          recordarPropio(enviado?.key?.id);
+          console.log(`💬 respondido a "${texto.slice(0, 50)}" (de ${autor})`);
         }
       } catch (err) {
-        console.error("   ↳ ❌ Error procesando/enviando:", err);
+        console.error(`❌ Error con "${texto.slice(0, 40)}":`, err?.message || err);
       }
     }
   });
 }
 
-// Baileys lanza rechazos transitorios (ej. 428 "Connection Closed") desde su
-// lógica interna de reconexión. Los logueamos en vez de dejar morir el proceso.
 process.on("unhandledRejection", (e) => {
   const msg = e?.output?.payload?.message || e?.message || e;
-  console.error("⚠️  Promesa rechazada sin manejar (se ignora):", msg);
+  console.error("⚠️  Promesa rechazada sin manejar:", msg);
 });
 
-// Si algo revienta de forma sincrónica, lo dejamos registrado y salimos limpio.
-// systemd (Restart=always) levanta el proceso de nuevo en 10s.
 process.on("uncaughtException", (e) => {
   console.error("\n💥 EXCEPCIÓN NO CAPTURADA — el proceso se reinicia:");
   console.error(e?.stack || e);
   process.exit(1);
 });
 
-// Deja constancia de cualquier salida, para poder diagnosticar caídas.
 process.on("exit", (code) => {
   console.error(`\n🔚 Proceso terminando con código ${code} — ${new Date().toISOString()}`);
 });
