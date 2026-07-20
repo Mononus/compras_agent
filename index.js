@@ -16,7 +16,10 @@ import { interpretar, claudeDisponible } from "./llm.js";
 
 const PREFIX = process.env.BOT_PREFIX || "!";
 const TARGET_GROUP = process.env.TARGET_GROUP || ""; // JID del grupo, ej "12036...@g.us"
-const logger = pino({ level: "warn" });
+// Baileys es muy ruidoso: timeouts de init queries, fallos de descifrado de
+// mensajes viejos, etc., casi todo inofensivo. Por defecto lo silenciamos.
+// Para ver su salida interna: LOG_BAILEYS=warn npm start
+const logger = pino({ level: process.env.LOG_BAILEYS || "silent" });
 
 // ---------- Formato de respuestas ----------
 
