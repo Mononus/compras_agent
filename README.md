@@ -1,112 +1,155 @@
-# 🛒 Bot de lista de compras para WhatsApp
+# Módulo de agenda familiar
 
-Un bot que vive en un grupo de WhatsApp (vos, tu mujer y quien quieras) para armar
-la lista de compras entre todos y consultarla cuando estás en el súper.
+Segundo agente dentro del mismo proceso: atiende **otro grupo** de WhatsApp y
+maneja un Google Calendar compartido.
 
-## Qué hace
+- agenda eventos escritos en lenguaje natural
+- responde consultas (`hoy`, `mañana`, `semana`, `qué tenemos el viernes`)
+- todas las mañanas 07:30 manda los eventos del día
+- los domingos 20:00 manda el resumen de la semana entrante
 
-- `!agregar leche, pan, huevos` — suma cosas a la lista
-- `!lista` — muestra lo que falta comprar
-- `!compre leche` — marca un item como comprado (lo saca de la lista)
-- `!borrar pan` — saca algo sin haberlo comprado
-- `!vaciar` — limpia toda la lista
-- `!ayuda` — muestra los comandos
+## Por qué vive acá adentro y no en su propio repo
 
-Si activás la API de Claude (opcional), también entiende lenguaje natural:
-`! comprá yogur y ya tengo la leche` → agrega yogur y marca la leche como comprada.
+Una credencial de Baileys = una sesión = **un proceso**. Dos procesos con la
+misma carpeta `auth/` se expulsan mutuamente en loop (`conflict: replaced`).
+Como queremos usar el mismo número que la lista de compras, tiene que ser el
+mismo proceso.
 
----
+Lo que sí está separado es el código: todo el módulo vive en `calendario/` y
+`index.js` solo lo llama. El acoplamiento son ~30 líneas.
 
-## ⚠️ Antes de empezar: sobre WhatsApp y grupos
+```
+        index.js  (1 socket de WhatsApp)
+              │
+      ┌───────┴────────┐
+ grupo compras    grupo familia
+      │                │
+   store.js      calendario/agent.js
+```
 
-La **API oficial de WhatsApp (Cloud API) NO soporta grupos**, solo chats 1-a-1 con
-un número de empresa. Como vos querés que funcione en un **grupo**, este bot usa
-**Baileys**, una librería que se conecta con el protocolo de WhatsApp Web
-(vinculás un número escaneando un QR, igual que WhatsApp Web en la compu).
+## Archivos
 
-Esto tiene una implicancia importante:
+| | |
+|---|---|
+| `config.js` | variables de entorno. **Nunca tira excepción al importarse** |
+| `agent.js` | núcleo: mensaje → intención → acción. No sabe de Baileys |
+| `calendar.js` | Google Calendar: listar / crear / borrar / buscar |
+| `google-auth.js` | cliente OAuth2 con refresh token |
+| `llm.js` | interpretación con Claude (fetch directo, sin SDK) |
+| `fechas.js` | timezone, fechas relativas, ISO con offset. Sin dependencias |
+| `formato.js` | los textos que se mandan al grupo |
+| `scheduler.js` | los cron de los resúmenes |
+| `obtener-token.js` | helper de un solo uso para el OAuth |
+| `probar.js` | verificación sin tocar WhatsApp |
 
-> Usar clientes no oficiales va contra los Términos de Servicio de WhatsApp.
-> Es muy común para bots personales/familiares y funciona bien, pero **existe un
-> riesgo (bajo pero real) de que el número quede baneado**. Por eso se recomienda
-> usar un **número dedicado** (un chip barato o un número secundario), no tu número
-> personal principal.
+## Setup
 
-Ese número dedicado es el que va a "ser" el bot dentro del grupo.
+### 1. Calendario compartido
 
----
+En calendar.google.com → *Otros calendarios* → **Crear calendario**.
+Compartilo con la familia dándoles *Hacer cambios en los eventos*.
 
-## Instalación local (para probar)
+### 2. Credenciales OAuth
 
-Requisitos: Node.js 20 o superior.
+En [console.cloud.google.com](https://console.cloud.google.com):
+
+1. Crear proyecto (ej. `agenda-familia`)
+2. *APIs y servicios* → **Habilitar** → **Google Calendar API**
+3. *Pantalla de consentimiento OAuth* → **Externo** → completar nombre y mail
+4. *Credenciales* → **Crear credenciales** → *ID de cliente de OAuth* →
+   **Aplicación de escritorio**
+
+> ### ⚠️ Publicá la app
+> Mientras el proyecto esté en modo **Testing**, el refresh token **caduca a
+> los 7 días** y el bot deja de andar sin aviso. En la pantalla de
+> consentimiento tocá **Publicar aplicación**. No necesitás verificación de
+> Google porque solo usás scopes de tu propia cuenta; vas a ver un cartel de
+> "app no verificada" al autorizar → *Configuración avanzada → Ir a (inseguro)*.
+
+### 3. Refresh token — en tu compu, no en la EC2
 
 ```bash
-cd lista-compras-bot
 npm install
-cp .env.example .env      # editá el .env si querés (opcional al principio)
-npm start
+GOOGLE_CLIENT_ID=xxx GOOGLE_CLIENT_SECRET=yyy npm run agenda:auth
 ```
 
-Al arrancar, aparece un **código QR en la terminal**. Desde el WhatsApp del número
-que va a ser el bot: **Ajustes → Dispositivos vinculados → Vincular un dispositivo**
-y escaneá el QR. Listo, queda conectado.
+Se abre el navegador, autorizás, y la consola imprime el
+`GOOGLE_REFRESH_TOKEN` y los IDs de tus calendarios.
 
-### Configurar el grupo objetivo
+### 4. Variables
 
-1. Con el bot corriendo y `TARGET_GROUP` vacío, escribí cualquier mensaje en el
-   grupo donde lo quieras usar.
-2. En la terminal vas a ver algo como:
-   `📍 Mensaje en grupo con JID: 120363012345678901@g.us`
-3. Copiá ese JID a `TARGET_GROUP` en el `.env` y reiniciá (`npm start`).
+Copiá al `.env` de la EC2 el bloque de agenda de `.env.example`. Para el
+`TARGET_GROUP_FAMILIA`, mirá el arranque del bot: si `TARGET_GROUP` está vacío
+lista todos los grupos con su JID.
 
-A partir de ahí el bot solo responde en ese grupo e ignora todo lo demás.
+### 5. Probar antes de reiniciar
 
-> Asegurate de agregar el número del bot al grupo de WhatsApp.
-
----
-
-## (Opcional) Lenguaje natural con Claude
-
-Si querés que entienda frases sueltas en vez de solo comandos:
-
-1. Conseguí una API key en https://console.anthropic.com
-2. Ponela en `.env` como `ANTHROPIC_API_KEY=...`
-
-Sin esto, el bot funciona igual con los comandos `!`.
-
----
-
-## Desplegar 24/7
-
-Ver **[DEPLOY-EC2.md](DEPLOY-EC2.md)** para la guía completa en Amazon EC2
-(incluye qué instancia necesitás y cómo dejarlo corriendo con systemd).
-
-También funciona en Railway, Render, Fly.io o cualquier VPS. Lo importante en
-cualquier caso: que la carpeta `auth/` y el archivo `lista.json` **persistan**
-entre reinicios, si no vas a tener que re-escanear el QR y perdés la lista.
-
----
-
-## Estructura
-
-```
-lista-compras-bot/
-├── index.js                    # bot: conexión a WhatsApp y comandos
-├── store.js                    # persistencia de la lista (JSON)
-├── llm.js                      # parseo natural opcional con Claude
-├── lista-compras-bot.service   # unit de systemd para EC2
-├── package.json
-├── .env.example
-├── DEPLOY-EC2.md
-└── README.md
+```bash
+npm run agenda:probar          # lee el calendario, imprime los resúmenes
+node calendario/probar.js crear   # crea y borra un evento: valida escritura
+npm run agenda:parse           # qué JSON devuelve Claude para frases de ejemplo
 ```
 
-## Notas
+Si estos pasan, el grueso del riesgo ya está cubierto.
 
-- Los datos se guardan en `lista.json` (texto plano). Para varias listas o más
-  robustez se puede migrar a SQLite fácil.
-- La sesión de WhatsApp queda en `auth/`. Si borrás esa carpeta, hay que re-escanear
-  el QR.
-- Si el número se desconecta (ej. cerraste sesión desde el celu), el bot intenta
-  reconectar solo; si fue logout total, hay que vincular de nuevo.
-- `.gitignore` ya excluye `.env`, `auth/` y `lista.json`: nunca subas esos a GitHub.
+### 6. Deploy
+
+```bash
+# en la EC2
+cd ~/compras_agent
+git pull
+npm install            # googleapis y node-cron son nuevos
+sudo systemctl restart lista-compras-bot
+journalctl -u lista-compras-bot -f | grep -E "📅|Conectado|Modo:"
+```
+
+Buscá `📅 Agenda familiar: activa en ...` y
+`📅 Resúmenes: diario "30 7 * * *" | semanal "0 20 * * 0"`.
+
+Después, en el grupo familiar, escribí `ayuda`.
+
+## Si algo sale mal
+
+El módulo está diseñado para **fallar solo**, sin llevarse puesta la lista de
+compras:
+
+- falta configuración de Google → arranca deshabilitado y lo dice en el log
+- error de la API de Google → lo avisa en el grupo, no tira el proceso
+- `TZ_AGENDA` mal escrita → los resúmenes no se programan, el resto anda
+- para apagarlo del todo: vaciá `TARGET_GROUP_FAMILIA` y reiniciá
+
+| Síntoma | Causa probable |
+|---|---|
+| `📅 Agenda familiar: apagada (falta ...)` | justamente eso, en el `.env` |
+| `invalid_grant` | app en modo *Testing* (publicala) o acceso revocado → `npm run agenda:auth` |
+| `notFound` | `GOOGLE_CALENDAR_ID` mal copiado |
+| Crea eventos y nadie los ve | los está creando en tu calendario personal |
+| No llega el resumen matutino | ¿el día estaba vacío? Si no hay eventos no escribe. Chequeá `TZ_AGENDA` |
+| Resumen duplicado | dos procesos corriendo (`systemctl status`) |
+| No responde en el grupo | ¿`TARGET_GROUP_FAMILIA` es el JID correcto? |
+
+Forzar un resumen a mano:
+
+```bash
+node --input-type=module -e "
+import 'dotenv/config';
+const {crearAgente} = await import('./calendario/agent.js');
+const a = crearAgente({ wa: { enviarTexto: (j,t) => console.log(t) } });
+await a.resumenDiario();
+"
+```
+
+## Costo de API
+
+El grupo familiar **no** es dedicado como el de compras: hay mucha charla que
+no es agenda. Por eso `agent.js` tiene un prefiltro regex (`PISTAS`): si el
+mensaje no menciona días, horarios, turnos ni eventos, ni siquiera llama a
+Claude. Si ves pedidos que se le escapan, ampliá esa regex antes de tocar
+otra cosa.
+
+## Pendiente
+
+- Recordatorio 1h antes de cada evento
+- Editar eventos ("corré el turno del dentista a las 5")
+- Recurrencias ("todos los martes fútbol")
+- Filtrar por persona ("los eventos de Mati")

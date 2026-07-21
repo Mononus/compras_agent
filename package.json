@@ -5,7 +5,10 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "agenda:auth": "node calendario/obtener-token.js",
+    "agenda:probar": "node calendario/probar.js",
+    "agenda:parse": "node calendario/probar.js parse"
   },
   "engines": {
     "node": ">=20"
@@ -14,6 +17,8 @@
     "@whiskeysockets/baileys": "^6.7.9",
     "@hapi/boom": "^10.0.1",
     "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "node-cron": "^3.0.3",
     "pino": "^9.5.0",
     "qrcode-terminal": "^0.12.0"
   }

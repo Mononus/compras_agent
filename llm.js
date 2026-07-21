@@ -1,78 +1,84 @@
-// llm.js — interpretación de lenguaje natural con la API de Claude.
-// Sin ANTHROPIC_API_KEY el bot sigue funcionando solo con palabras clave.
+// calendario/llm.js — interpretación de lenguaje natural para la agenda.
+// Usa fetch directo contra la API de Claude, igual que el llm.js de la lista
+// (así no sumamos el SDK de Anthropic como dependencia).
 
-const API_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5-20251001";
+import { config, claudeDisponible } from "./config.js";
+import { partes, DIAS } from "./fechas.js";
 
-export const claudeDisponible = Boolean(API_KEY);
+const ACCIONES = ["crear", "ver_dia", "ver_semana", "buscar", "borrar", "ayuda", "nada"];
 
-const SYSTEM = `Sos el cerebro de un bot de lista de compras que vive en un grupo de WhatsApp de una familia.
-El grupo es EXCLUSIVO para la lista de compras, así que casi todo lo que se escribe son cosas para comprar.
+const ESQUEMA = `Recibís un mensaje de un grupo familiar de WhatsApp y devolvés SOLO un JSON, sin texto adicional:
 
-Recibís un mensaje y devolvés SOLO un JSON, sin texto adicional:
-{"accion":"agregar|listar|comprado|borrar|vaciar|ninguna","items":["..."]}
+{"accion":"crear","titulo":str,"fecha":"YYYY-MM-DD","hora":"HH:MM"|null,"duracionMin":int|null,"fechaFin":"YYYY-MM-DD"|null,"lugar":str|null,"notas":str|null}
+{"accion":"ver_dia","fecha":"YYYY-MM-DD"}
+{"accion":"ver_semana","desde":"YYYY-MM-DD"|null}
+{"accion":"buscar","texto":str}
+{"accion":"borrar","texto":str}
+{"accion":"ayuda"}
+{"accion":"nada"}
 
-Acciones:
-- "agregar": quieren sumar cosas. Incluye mensajes que son SOLO nombres de productos.
-  "leche" → {"accion":"agregar","items":["leche"]}
-  "falta papel higiénico y azúcar" → {"accion":"agregar","items":["papel higiénico","azúcar"]}
-  "comprar 2 kg de tomate" → {"accion":"agregar","items":["tomate"]}
-- "comprado": ya lo compraron.
-  "ya tengo la leche" → {"accion":"comprado","items":["leche"]}
-  "listo el pan" → {"accion":"comprado","items":["pan"]}
-- "borrar": sacar de la lista SIN haberlo comprado.
-  "sacá el pan de la lista" → {"accion":"borrar","items":["pan"]}
-- "listar": quieren ver la lista.
-  "qué falta", "pasame la lista", "qué hay que comprar" → {"accion":"listar","items":[]}
-- "vaciar": limpiar toda la lista.
-- "ninguna": conversación que NO es sobre la lista. Usala para saludos, agradecimientos,
-  confirmaciones y charla suelta.
-  "gracias", "dale", "ok", "buenísimo", "ahí voy", "jajaja" → {"accion":"ninguna","items":[]}
+Reglas:
+- Este grupo NO es exclusivo de la agenda: la mayoría de los mensajes son charla familiar.
+  Ante la duda, "nada". Solo actuá cuando el pedido de agenda es claro.
+  "jajaja", "dale", "gracias", "ya salgo" → {"accion":"nada"}
+- Sin hora explícita ("el viernes es feriado", "cumple de Ana el 3") → hora:null,
+  queda como evento de día completo.
+- Resolvé fechas relativas ("mañana", "el jueves", "el finde", "en 15 días") contra
+  la fecha actual que te doy. "El jueves" a secas = el próximo jueves; si hoy es
+  jueves y el horario todavía no pasó, es hoy.
+- Horas ambiguas: sentido común familiar. "acto a las 8" = 08:00; "cena a las 9" = 21:00.
+- "de 3 a 5" → hora "15:00", duracionMin 120.
+- titulo corto y sin la fecha adentro: "Turno pediatra de Mati", no
+  "turno con el pediatra de Mati el martes a las 4".
+- En "borrar", el texto es lo mínimo que sirva para encontrar el evento ("dentista").
 
-Reglas para los items:
-- Normalizá a minúscula y singular cuando sea natural ("tomates" → "tomate").
-- Sacá cantidades y unidades salvo que distingan el producto ("leche descremada" se mantiene).
-- Un mensaje puede traer varios items separados por comas, "y" o saltos de línea.
-
-Ante la duda entre "agregar" y "ninguna": si el mensaje nombra algo comprable, es "agregar".
 Devolvé ÚNICAMENTE el JSON.`;
 
-export async function interpretar(mensaje) {
-  if (!API_KEY) return null;
+export async function interpretar(mensaje, { autor } = {}) {
+  if (!claudeDisponible) return null;
+
+  const p = partes();
+  const ahora =
+    `${DIAS[p.diaSemana]} ${p.ymd}, ` +
+    `${String(p.hora).padStart(2, "0")}:${String(p.minuto).padStart(2, "0")} (${config.tz})`;
 
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-api-key": API_KEY,
+        "x-api-key": config.apiKey,
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 300,
-        system: SYSTEM,
-        messages: [{ role: "user", content: mensaje }],
+        model: config.modelo,
+        max_tokens: 400,
+        system: `Sos el cerebro de un bot de agenda familiar en un grupo de WhatsApp argentino.\nFecha y hora actual: ${ahora}.\n\n${ESQUEMA}`,
+        messages: [{ role: "user", content: autor ? `[${autor}] ${mensaje}` : mensaje }],
       }),
     });
 
     if (!res.ok) {
-      console.error(`⚠️  Claude respondió ${res.status}: ${await res.text()}`);
+      console.error(`⚠️  Claude (agenda) respondió ${res.status}: ${await res.text()}`);
       return null;
     }
 
     const data = await res.json();
-    const texto = data?.content?.[0]?.text?.trim() || "";
-    const jsonMatch = texto.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    const validas = ["agregar", "listar", "comprado", "borrar", "vaciar", "ninguna"];
-    if (!validas.includes(parsed.accion)) return null;
-    parsed.items = Array.isArray(parsed.items) ? parsed.items.filter(Boolean) : [];
-    return parsed;
+    return parsearJson(data?.content?.[0]?.text || "");
   } catch (e) {
-    console.error("⚠️  Error llamando a Claude:", e?.message || e);
+    console.error("⚠️  Error llamando a Claude (agenda):", e?.message || e);
+    return null;
+  }
+}
+
+/** Tolera que el modelo devuelva el JSON envuelto en texto o backticks. */
+export function parsearJson(texto) {
+  const m = (texto || "").match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const parsed = JSON.parse(m[0]);
+    return ACCIONES.includes(parsed?.accion) ? parsed : null;
+  } catch {
     return null;
   }
 }

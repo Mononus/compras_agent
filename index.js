@@ -14,6 +14,12 @@ import pino from "pino";
 import * as store from "./store.js";
 import { interpretar, claudeDisponible } from "./llm.js";
 
+// Módulo de agenda familiar. Vive en calendario/ y atiende OTRO grupo.
+// Si le falta configuración se deshabilita solo: nunca rompe la lista de compras.
+import { crearAgente } from "./calendario/agent.js";
+import * as agenda from "./calendario/scheduler.js";
+import { calendarioHabilitado, faltantes } from "./calendario/config.js";
+
 // libsignal escribe ruido de sesiones con console.log directo (no pasa por pino).
 // Lo filtramos para poder leer la consola. Con LOG_BAILEYS=warn se muestra todo.
 if (!process.env.LOG_BAILEYS) {
@@ -60,6 +66,8 @@ if (!process.env.LOG_BAILEYS) {
 
 const PREFIX = process.env.BOT_PREFIX || "!";
 const TARGET_GROUP = process.env.TARGET_GROUP || "";
+// Grupo de la agenda familiar. Vacío = módulo apagado.
+const TARGET_GROUP_FAMILIA = process.env.TARGET_GROUP_FAMILIA || "";
 // Por defecto NO se exige prefijo: el grupo es dedicado a compras.
 const REQUIERE_PREFIJO = process.env.REQUIERE_PREFIJO === "true";
 // Mensajes más largos que esto no se consideran comandos (evita gastar API).
@@ -268,6 +276,26 @@ async function iniciar() {
     }
   }
 
+  // ---------- Agenda familiar ----------
+  // El agente no sabe de Baileys: le pasamos un adaptador. Ojo con
+  // recordarPropio() en enviarTexto — sin eso el bot leería sus propios
+  // resúmenes como si fueran comandos.
+  const agenteCalendario = calendarioHabilitado
+    ? crearAgente({
+        wa: {
+          async enviarTexto(jid, texto) {
+            const enviado = await sock.sendMessage(jid, { text: texto });
+            recordarPropio(enviado?.key?.id);
+            return enviado;
+          },
+          async reaccionar(key, emoji) {
+            await sock.sendMessage(key.remoteJid, { react: { text: emoji, key } });
+          },
+        },
+        grupoJid: TARGET_GROUP_FAMILIA,
+      })
+    : null;
+
   async function listarGrupos() {
     for (let intento = 1; intento <= 3; intento++) {
       try {
@@ -299,6 +327,10 @@ async function iniciar() {
     if (connection === "close") {
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
 
+      // Los cron de la agenda se paran junto con la conexión; iniciar() los
+      // vuelve a crear al reconectar. Es idempotente, no duplica envíos.
+      agenda.detener();
+
       if (code === DisconnectReason.loggedOut) {
         console.log("\n🚪 Sesión cerrada desde el celular. Borrá auth/ y re-escaneá el QR.\n");
         process.exit(1);
@@ -322,6 +354,21 @@ async function iniciar() {
         console.log("⚠️  TARGET_GROUP vacío: el bot responde en cualquier chat.");
         setTimeout(listarGrupos, 5000);
       }
+
+      if (agenteCalendario) {
+        console.log(`📅 Agenda familiar: activa en ${TARGET_GROUP_FAMILIA}`);
+        // En try/catch a propósito: una TZ_AGENDA mal escrita hace que
+        // cron.schedule tire, y una excepción acá adentro llegaría a
+        // uncaughtException y mataría el bot de compras.
+        try {
+          agenda.iniciar(agenteCalendario);
+        } catch (e) {
+          console.error("❌ No pude programar los resúmenes:", e?.message || e);
+          console.error("   El resto de la agenda sigue funcionando. Revisá TZ_AGENDA y los CRON_*.");
+        }
+      } else {
+        console.log(`📅 Agenda familiar: apagada (falta ${faltantes().join(", ")})`);
+      }
     }
   });
 
@@ -333,8 +380,11 @@ async function iniciar() {
       const jid = msg.key.remoteJid;
       if (!jid) continue;
 
-      // Solo el grupo objetivo.
-      if (TARGET_GROUP && jid !== TARGET_GROUP) continue;
+      const esFamilia = Boolean(agenteCalendario) && jid === TARGET_GROUP_FAMILIA;
+
+      // Solo los grupos objetivo. Ojo: el grupo de la agenda tiene que pasar
+      // este filtro aunque no sea TARGET_GROUP.
+      if (!esFamilia && TARGET_GROUP && jid !== TARGET_GROUP) continue;
 
       // Nunca procesamos nuestras propias respuestas (protección anti-loop).
       if (idsPropios.has(msg.key.id)) continue;
@@ -347,6 +397,23 @@ async function iniciar() {
       if (ts && Math.floor(Date.now() / 1000) - ts > MAX_ANTIGUEDAD_SEG) continue;
 
       const autor = (msg.key.participant || jid).split("@")[0];
+
+      // ---- Rama agenda: el módulo se encarga y responde por su cuenta ----
+      if (esFamilia) {
+        try {
+          const actuo = await agenteCalendario.manejarMensaje({
+            texto,
+            autor: msg.pushName || autor,
+            key: msg.key,
+          });
+          if (actuo) console.log(`📅 "${texto.slice(0, 50)}" (de ${autor})`);
+        } catch (err) {
+          // manejarMensaje ya captura lo suyo; esto es el cinturón de seguridad
+          // para que un error de agenda jamás tumbe el bot de compras.
+          console.error(`❌ Error de agenda:`, err?.message || err);
+        }
+        continue;
+      }
 
       try {
         const r = await procesar(texto, autor);
