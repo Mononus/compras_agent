@@ -8,7 +8,7 @@
 //   wa.reaccionar(key, emoji)   -> Promise   (opcional)
 
 import * as calendar from "./calendar.js";
-import { interpretar } from "./llm.js";
+import { interpretar, interpretarImagen } from "./llm.js";
 import { hoyYmd, sumarDias, etiquetaDia, ymdDeEvento, horaDeEvento } from "./fechas.js";
 import * as formato from "./formato.js";
 import { config, claudeDisponible } from "./config.js";
@@ -19,6 +19,16 @@ const RE_MANANA = /^\s*(qu[eé] hay ma[ñn]ana|agenda de ma[ñn]ana|ma[ñn]ana)\
 const RE_SEMANA = /^\s*(semana|la semana|agenda de la semana|c[oó]mo viene la semana)\s*[?!.]*\s*$/i;
 const RE_AYUDA = /^\s*(ayuda|help|comandos)\s*[?!.]*\s*$/i;
 const RE_NUMERO = /^\s*([1-9])\s*$/;
+
+// Dispara la lectura de una imagen como evento. Solo si el epígrafe lo pide,
+// para no bajar (ni mandar a Claude) cada foto random del grupo.
+// Sin \b de cierre a propósito: queremos prefijos (agend→agendar/agendá/agenda,
+// anot→anotá/anotar). Un \b final exigiría límite de palabra y dejaría afuera
+// justamente las conjugaciones más comunes.
+const RE_IMG = /\b(agend|anot|guard|sum[aá]|cumple|invitaci[oó]n|evento|turno|cita|apunt|calendario)/i;
+
+// ~5 MB en binario ≈ 6.8M caracteres en base64. Por encima, no la mandamos.
+const MAX_IMG_BASE64 = 6_800_000;
 
 // Prefiltro barato. A diferencia del grupo de compras (que es dedicado), el
 // grupo familiar tiene mucha charla suelta: si el mensaje no huele a agenda,
@@ -45,11 +55,19 @@ export function crearAgente({ wa, grupoJid = config.grupoJid }) {
    * Punto de entrada. Devuelve true si el agente actuó.
    * Nunca propaga excepciones: los errores los avisa en el grupo y los loguea.
    */
-  async function manejarMensaje({ texto, autor, key }) {
+  async function manejarMensaje({ texto, autor, key, imagen } = {}) {
     const t = (texto || "").trim();
-    if (!t || t.length > config.largoMaximo) return false;
 
     try {
+      // 0) Imagen con epígrafe que pide agendar → la leemos con visión.
+      //    Va primero porque el caption ("agendá esto") no trae la fecha:
+      //    esa está adentro de la imagen.
+      if (imagen && RE_IMG.test(t)) {
+        return await agendarDesdeImagen(imagen, t, { autor, key });
+      }
+
+      if (!t || t.length > config.largoMaximo) return false;
+
       // 1) ¿Está contestando a un "¿cuál borro?"
       const num = t.match(RE_NUMERO);
       if (num && pendiente && Date.now() - pendiente.ts < 5 * 60 * 1000) {
@@ -94,6 +112,39 @@ export function crearAgente({ wa, grupoJid = config.grupoJid }) {
       await responder(`⚠️ Se me complicó con eso: ${mensajeAmigable(e)}`).catch(() => {});
       return true;
     }
+  }
+
+  /**
+   * Descarga la imagen (recién ahora, para no bajar fotos que no son eventos),
+   * la manda a Claude con visión y agenda lo que encuentre.
+   */
+  async function agendarDesdeImagen(imagen, caption, { autor, key } = {}) {
+    if (!claudeDisponible) return false;
+
+    await reaccionar(key, "👀"); // "la estoy mirando"
+
+    const base64 = await imagen.descargar();
+    if (!base64) {
+      await responder("No pude bajar la imagen. Probá reenviándola.");
+      return true;
+    }
+    if (base64.length > MAX_IMG_BASE64) {
+      await responder("La imagen es muy pesada para leerla. Mandala más chica o escribime los datos.");
+      return true;
+    }
+
+    const intencion = await interpretarImagen(base64, imagen.mime, caption, { autor });
+    if (!intencion || intencion.accion !== "crear" || !intencion.titulo || !intencion.fecha) {
+      await responder(
+        "Vi la imagen pero no pude sacar una fecha clara. Escribime los datos (qué, cuándo y a qué hora) y lo agendo 🙂"
+      );
+      return true;
+    }
+
+    const ev = await calendar.crear({ ...intencion, creadoPor: autor || null });
+    await reaccionar(key, "✅");
+    await responder(`${formato.confirmacionCreado(ev)}\n_(leído de la imagen — revisá que esté bien)_`);
+    return true;
   }
 
   async function ejecutar(intencion, { autor, key } = {}) {

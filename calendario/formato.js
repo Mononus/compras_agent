@@ -98,6 +98,10 @@ Escribime normal, sin comandos:
 • \`cumple de Ana el 3 de agosto\`
 • \`reunión de padres jueves de 19 a 21 en el colegio\`
 
+*Agendar desde una foto*
+• Mandá la invitación/flyer con un epígrafe tipo \`agendá esto\` o \`cumple\`
+  y saco fecha, hora y lugar de la imagen.
+
 *Consultar*
 • \`qué hay hoy\` / \`agenda de mañana\`
 • \`qué tenemos el viernes\`

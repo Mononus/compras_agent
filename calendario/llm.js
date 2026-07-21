@@ -71,6 +71,82 @@ export async function interpretar(mensaje, { autor } = {}) {
   }
 }
 
+/**
+ * Igual que interpretar(), pero a partir de una IMAGEN (invitación, flyer,
+ * captura). El caption es contexto opcional. Claude Haiku lee la imagen y
+ * devuelve el mismo JSON de acciones (en la práctica, "crear" o "nada").
+ *
+ * @param {string} base64  imagen ya codificada en base64 (sin el prefijo data:)
+ * @param {string} mime    ej. "image/jpeg"
+ * @param {string} caption texto que acompañó a la foto
+ */
+export async function interpretarImagen(base64, mime, caption, { autor } = {}) {
+  if (!claudeDisponible) return null;
+
+  const p = partes();
+  const ahora =
+    `${DIAS[p.diaSemana]} ${p.ymd}, ` +
+    `${String(p.hora).padStart(2, "0")}:${String(p.minuto).padStart(2, "0")} (${config.tz})`;
+
+  const mediaType = /png/i.test(mime)
+    ? "image/png"
+    : /webp/i.test(mime)
+      ? "image/webp"
+      : /gif/i.test(mime)
+        ? "image/gif"
+        : "image/jpeg";
+
+  const system =
+    `Sos el cerebro de un bot de agenda familiar en un grupo de WhatsApp argentino.\n` +
+    `Fecha y hora actual: ${ahora}.\n\n` +
+    `Te paso una IMAGEN (invitación de cumpleaños, flyer, captura, etc.) y quizás un texto.\n` +
+    `Extraé el evento y devolvé la acción "crear". Prestá atención a fecha, hora, lugar y de qué es.\n` +
+    `Si el año no figura, asumí el más cercano en el futuro. Si no hay hora clara, hora:null.\n` +
+    `Si la imagen NO tiene un evento con fecha (es un meme, una foto cualquiera), devolvé {"accion":"nada"}.\n\n` +
+    ESQUEMA;
+
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": config.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: config.modelo,
+        max_tokens: 400,
+        system,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+              {
+                type: "text",
+                text: caption
+                  ? `Contexto de quien la mandó${autor ? ` [${autor}]` : ""}: ${caption}`
+                  : "Agendá el evento que aparece en esta imagen.",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      console.error(`⚠️  Claude (agenda/imagen) respondió ${res.status}: ${await res.text()}`);
+      return null;
+    }
+
+    const data = await res.json();
+    return parsearJson(data?.content?.[0]?.text || "");
+  } catch (e) {
+    console.error("⚠️  Error llamando a Claude (agenda/imagen):", e?.message || e);
+    return null;
+  }
+}
+
 /** Tolera que el modelo devuelva el JSON envuelto en texto o backticks. */
 export function parsearJson(texto) {
   const m = (texto || "").match(/\{[\s\S]*\}/);

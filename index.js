@@ -6,6 +6,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import qrcode from "qrcode-terminal";
@@ -227,7 +228,22 @@ function textoDelMensaje(msg) {
     m.extendedTextMessage?.text ||
     m.imageMessage?.caption ||
     m.videoMessage?.caption ||
+    m.ephemeralMessage?.message?.imageMessage?.caption ||
+    m.viewOnceMessageV2?.message?.imageMessage?.caption ||
     ""
+  );
+}
+
+// Devuelve el imageMessage si el mensaje es (o envuelve) una foto. Contempla
+// mensajes efímeros y "ver una vez", que anidan el contenido real.
+function imagenDelMensaje(msg) {
+  const m = msg.message || {};
+  return (
+    m.imageMessage ||
+    m.ephemeralMessage?.message?.imageMessage ||
+    m.viewOnceMessage?.message?.imageMessage ||
+    m.viewOnceMessageV2?.message?.imageMessage ||
+    null
   );
 }
 
@@ -404,13 +420,32 @@ async function iniciar() {
 
       // ---- Rama agenda: el módulo se encarga y responde por su cuenta ----
       if (esFamilia) {
+        // Descargador lazy: solo se ejecuta si el agente decide leer la imagen
+        // (epígrafe con palabra clave). Así una foto suelta no se baja.
+        const im = imagenDelMensaje(msg);
+        const imagen = im
+          ? {
+              mime: im.mimetype || "image/jpeg",
+              descargar: async () => {
+                const buffer = await downloadMediaMessage(
+                  msg,
+                  "buffer",
+                  {},
+                  { logger, reuploadRequest: sock.updateMediaMessage }
+                );
+                return buffer.toString("base64");
+              },
+            }
+          : null;
+
         try {
           const actuo = await agenteCalendario.manejarMensaje({
             texto,
             autor: msg.pushName || autor,
             key: msg.key,
+            imagen,
           });
-          if (actuo) console.log(`📅 "${texto.slice(0, 50)}" (de ${autor})`);
+          if (actuo) console.log(`📅 "${(texto || "[imagen]").slice(0, 50)}" (de ${autor})`);
         } catch (err) {
           // manejarMensaje ya captura lo suyo; esto es el cinturón de seguridad
           // para que un error de agenda jamás tumbe el bot de compras.
