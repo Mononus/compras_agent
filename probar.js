@@ -11,6 +11,9 @@ import * as calendar from "./calendar.js";
 import * as formato from "./formato.js";
 import { interpretar } from "./llm.js";
 import { hoyYmd, sumarDias, etiquetaDia, partes, DIAS } from "./fechas.js";
+import { obtenerCliente, emailServiceAccount } from "./google-auth.js";
+import { modoAuth } from "./config.js";
+import { google } from "googleapis";
 
 const modo = process.argv[2] || "";
 
@@ -35,11 +38,14 @@ async function probarParser() {
 }
 
 async function probarCalendario() {
-  const falta = faltantes();
+  // Para probar el calendario NO hace falta el grupo de WhatsApp todavía.
+  const falta = faltantes().filter((f) => f.startsWith("GOOGLE_"));
   if (falta.length) {
     console.error(`✘ Falta configurar: ${falta.join(", ")}`);
     process.exit(1);
   }
+
+  console.log(`Autenticación: ${modoAuth}`);
 
   console.log(`✔ Calendario: "${await verificar()}"\n`);
 
@@ -70,7 +76,55 @@ async function probarCalendario() {
   }
 }
 
-const tarea = modo === "parse" ? probarParser() : probarCalendario();
+/** Lista los calendarios a los que tenés acceso, con su ID. */
+async function listarCalendarios() {
+  const cal = google.calendar({ version: "v3", auth: obtenerCliente() });
+  const { data } = await cal.calendarList.list();
+  const items = data.items || [];
+
+  if (!items.length) {
+    console.log("La cuenta no ve ningún calendario todavía.");
+    if (modoAuth === "service_account") {
+      console.log(`\nCompartí el calendario familiar con:\n\n  ${emailServiceAccount()}\n`);
+      console.log("En Google Calendar: Configuración del calendario → Compartir con");
+      console.log('determinadas personas → Añadir → permiso "Hacer cambios en los eventos".');
+      console.log("\nEl ID del calendario está en esa misma pantalla, más abajo,");
+      console.log('en "Integrar calendario" → "ID de calendario".');
+    }
+    return;
+  }
+
+  console.log("Calendarios disponibles:\n");
+  for (const c of items) {
+    const rol =
+      c.accessRole === "owner" || c.accessRole === "writer" ? "✏️  escritura" : "👁  solo lectura";
+    console.log(`  ${c.summary}${c.primary ? " (principal)" : ""}   ${rol}`);
+    console.log(`  GOOGLE_CALENDAR_ID=${c.id}\n`);
+  }
+  console.log("Copiá al .env el ID del calendario FAMILIAR (no el principal).");
+}
+
+/** Muestra con qué identidad se está conectando el bot. */
+async function mostrarIdentidad() {
+  console.log(`Modo de autenticación: ${modoAuth || "SIN CONFIGURAR"}`);
+  if (modoAuth === "service_account") {
+    console.log(`Archivo : ${config.google.serviceAccountFile}`);
+    console.log(`Email   : ${emailServiceAccount()}`);
+    console.log("\n☝️  Con ESE email hay que compartir el calendario familiar.");
+  } else if (modoAuth === "oauth") {
+    console.log("⚠️  OAuth de usuario: el refresh token caduca a los 7 días si la");
+    console.log("    app está en modo Testing. Para el servicio conviene service account.");
+  }
+  console.log(`Calendario configurado: ${config.google.calendarId || "(vacío)"}`);
+}
+
+const TAREAS = {
+  parse: probarParser,
+  calendarios: listarCalendarios,
+  quien: mostrarIdentidad,
+};
+
+const tarea = (TAREAS[modo] || probarCalendario)();
 tarea.catch((e) => {
   console.error("✘ Falló:", e?.message || e);
   process.exit(1);

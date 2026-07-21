@@ -353,6 +353,10 @@ async function iniciar() {
       if (!TARGET_GROUP) {
         console.log("⚠️  TARGET_GROUP vacío: el bot responde en cualquier chat.");
         setTimeout(listarGrupos, 5000);
+      } else if (process.env.LISTAR_GRUPOS === "true") {
+        // Para averiguar el JID de un grupo nuevo sin tener que vaciar
+        // TARGET_GROUP (que haría al bot responder en los ~200 grupos).
+        setTimeout(listarGrupos, 5000);
       }
 
       if (agenteCalendario) {

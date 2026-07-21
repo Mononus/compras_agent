@@ -42,6 +42,28 @@ Lo que sí está separado es el código: todo el módulo vive en `calendario/` y
 | `obtener-token.js` | helper de un solo uso para el OAuth |
 | `probar.js` | verificación sin tocar WhatsApp |
 
+## Autenticación: por qué service account y no OAuth
+
+`https://www.googleapis.com/auth/calendar` es un scope **sensible** para
+Google. Con OAuth de usuario eso te deja dos caminos, los dos malos para un
+bot que corre solo:
+
+| | |
+|---|---|
+| App en *Testing* | anda, pero el refresh token **caduca a los 7 días** |
+| App *In production* | Google bloquea el scope hasta que verifiques la app — para Calendar, con video demostrativo incluido |
+
+Una **service account** no pasa por nada de eso: es una identidad propia, sin
+pantalla de consentimiento, y su acceso no vence. Compartís el calendario con
+su email como si fuera una persona más.
+
+Lo que una service account **no** puede hacer (y no nos importa acá): invitar
+asistentes externos sin Google Workspace, ni acceder a tu calendario personal
+si no se lo compartiste.
+
+El módulo soporta los dos modos y elige según lo que haya en el `.env`.
+`node calendario/probar.js quien` te dice cuál está usando.
+
 ## Setup
 
 ### 1. Calendario compartido
@@ -49,32 +71,38 @@ Lo que sí está separado es el código: todo el módulo vive en `calendario/` y
 En calendar.google.com → *Otros calendarios* → **Crear calendario**.
 Compartilo con la familia dándoles *Hacer cambios en los eventos*.
 
-### 2. Credenciales OAuth
+### 2. Service account
 
 En [console.cloud.google.com](https://console.cloud.google.com):
 
-1. Crear proyecto (ej. `agenda-familia`)
+1. Crear proyecto (o usar el que ya tengas)
 2. *APIs y servicios* → **Habilitar** → **Google Calendar API**
-3. *Pantalla de consentimiento OAuth* → **Externo** → completar nombre y mail
-4. *Credenciales* → **Crear credenciales** → *ID de cliente de OAuth* →
-   **Aplicación de escritorio**
+3. *IAM y administración* → **Cuentas de servicio** → **Crear cuenta de servicio**
+   - nombre: `agenda-bot`
+   - los pasos de "conceder acceso al proyecto" y "usuarios" se saltean
+4. Entrar a la cuenta creada → pestaña **Claves** → *Agregar clave* →
+   **Crear clave nueva** → tipo **JSON** → se descarga el archivo
 
-> ### ⚠️ Publicá la app
-> Mientras el proyecto esté en modo **Testing**, el refresh token **caduca a
-> los 7 días** y el bot deja de andar sin aviso. En la pantalla de
-> consentimiento tocá **Publicar aplicación**. No necesitás verificación de
-> Google porque solo usás scopes de tu propia cuenta; vas a ver un cartel de
-> "app no verificada" al autorizar → *Configuración avanzada → Ir a (inseguro)*.
+Ese JSON es la credencial. Guardalo en el servidor (nunca en el repo).
 
-### 3. Refresh token — en tu compu, no en la EC2
+### 3. Compartir el calendario con la cuenta
+
+El JSON tiene un campo `client_email`, algo como
+`agenda-bot@tu-proyecto.iam.gserviceaccount.com`. Para verlo:
 
 ```bash
-npm install
-GOOGLE_CLIENT_ID=xxx GOOGLE_CLIENT_SECRET=yyy npm run agenda:auth
+node calendario/probar.js quien
 ```
 
-Se abre el navegador, autorizás, y la consola imprime el
-`GOOGLE_REFRESH_TOKEN` y los IDs de tus calendarios.
+En Google Calendar → calendario familiar → *Configuración y uso compartido* →
+**Compartir con determinadas personas** → *Añadir* → pegás ese email →
+permiso **Hacer cambios en los eventos**.
+
+En esa misma pantalla, más abajo, *Integrar calendario* → **ID de calendario**:
+ese valor va en `GOOGLE_CALENDAR_ID`.
+
+> Si el bot dice "no veo el calendario", es que falta este paso o que Google
+> todavía no propagó el permiso. Esperá un minuto y reintentá.
 
 ### 4. Variables
 
@@ -85,9 +113,11 @@ lista todos los grupos con su JID.
 ### 5. Probar antes de reiniciar
 
 ```bash
-npm run agenda:probar          # lee el calendario, imprime los resúmenes
-node calendario/probar.js crear   # crea y borra un evento: valida escritura
-npm run agenda:parse           # qué JSON devuelve Claude para frases de ejemplo
+node calendario/probar.js quien        # con qué identidad se conecta
+node calendario/probar.js calendarios  # calendarios visibles y su ID
+npm run agenda:probar                  # lee el calendario, imprime los resúmenes
+node calendario/probar.js crear        # crea y borra un evento: valida escritura
+npm run agenda:parse                   # qué devuelve Claude para frases de ejemplo
 ```
 
 Si estos pasan, el grueso del riesgo ya está cubierto.
@@ -121,7 +151,10 @@ compras:
 | Síntoma | Causa probable |
 |---|---|
 | `📅 Agenda familiar: apagada (falta ...)` | justamente eso, en el `.env` |
-| `invalid_grant` | app en modo *Testing* (publicala) o acceso revocado → `npm run agenda:auth` |
+| `Insufficient Permission` | el token no tiene el scope de Calendar |
+| `access_denied` al autorizar | scope sensible con OAuth → pasate a service account |
+| `Not Found` / "no veo el calendario" | falta compartir el calendario con la service account |
+| `invalid_grant` (solo OAuth) | refresh token vencido: modo *Testing* caduca a los 7 días |
 | `notFound` | `GOOGLE_CALENDAR_ID` mal copiado |
 | Crea eventos y nadie los ve | los está creando en tu calendario personal |
 | No llega el resumen matutino | ¿el día estaba vacío? Si no hay eventos no escribe. Chequeá `TZ_AGENDA` |
