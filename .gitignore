@@ -3,3 +3,5 @@ auth/
 lista.json
 .env
 .DS_Store
+service-account.json
+package-lock.json
