@@ -34,7 +34,7 @@ const MAX_IMG_BASE64 = 6_800_000;
 // grupo familiar tiene mucha charla suelta: si el mensaje no huele a agenda,
 // ni llamamos a la API.
 const PISTAS =
-  /\b(agend|calendario|turno|cita|reuni[oó]n|cumple|evento|recordar|recordatorio|anotar|anot[aá]|acto|m[eé]dico|dentista|pediatra|colegio|escuela|hoy|ma[ñn]ana|pasado|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|semana|finde|feriado|vacacion|horario)\b|\d{1,2}\s*(hs|hrs|h\b|:\d{2})/i;
+  /\b(agend|calendario|turno|cita|reuni[oó]n|cumple|evento|recordar|recordatorio|anotar|anot[aá]|acto|m[eé]dico|dentista|pediatra|colegio|escuela|clase|feriado|asueto|paro|hoy|ma[ñn]ana|pasado|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|semana|finde|vacacion|horario|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b|\d{1,2}\s*(hs|hrs|h\b|:\d{2})|\d{1,2}\s+de\s+[a-záéíóú]/i;
 
 export function crearAgente({ wa, grupoJid = config.grupoJid }) {
   // Candidatos a borrar esperando que alguien conteste con un número. TTL 5 min.
