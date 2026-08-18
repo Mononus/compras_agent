@@ -9,7 +9,7 @@ const ACCIONES = ["crear", "ver_dia", "ver_semana", "buscar", "borrar", "ayuda",
 
 const ESQUEMA = `Recibís un mensaje de un grupo familiar de WhatsApp y devolvés SOLO un JSON, sin texto adicional:
 
-{"accion":"crear","titulo":str,"fecha":"YYYY-MM-DD","hora":"HH:MM"|null,"duracionMin":int|null,"fechaFin":"YYYY-MM-DD"|null,"lugar":str|null,"notas":str|null}
+{"accion":"crear","titulo":str,"fecha":"YYYY-MM-DD","hora":"HH:MM"|null,"duracionMin":int|null,"fechaFin":"YYYY-MM-DD"|null,"lugar":str|null,"notas":str|null,"repetir":{"freq":"DAILY|WEEKLY|MONTHLY|YEARLY","dias":["MO","TU","WE","TH","FR","SA","SU"]|null}|null}
 {"accion":"ver_dia","fecha":"YYYY-MM-DD"}
 {"accion":"ver_semana","desde":"YYYY-MM-DD"|null}
 {"accion":"buscar","texto":str}
@@ -31,6 +31,17 @@ Reglas:
 - titulo corto y sin la fecha adentro: "Turno pediatra de Mati", no
   "turno con el pediatra de Mati el martes a las 4".
 - En "borrar", el texto es lo mínimo que sirva para encontrar el evento ("dentista").
+- REPETICIÓN: si el mensaje indica que algo se repite ("todos los martes",
+  "cada semana", "los lunes y miércoles", "todos los días", "el 3 de cada mes",
+  "cada año"), completá "repetir". La "fecha" es SIEMPRE la primera ocurrencia
+  (la más próxima). Ejemplos:
+  · "todos los martes fútbol 18hs" → fecha = próximo martes, hora "18:00",
+    repetir {"freq":"WEEKLY","dias":null}  (el día sale de la fecha)
+  · "danza lunes y miércoles 17hs" → fecha = próximo lunes o miércoles,
+    repetir {"freq":"WEEKLY","dias":["MO","WE"]}
+  · "todos los días tomar la pastilla 9am" → repetir {"freq":"DAILY","dias":null}
+  · "el 3 de cada mes pagar expensas" → repetir {"freq":"MONTHLY","dias":null}
+  Sin repetición, repetir:null. NO inventes repetición si el mensaje no la pide.
 
 Devolvé ÚNICAMENTE el JSON.`;
 

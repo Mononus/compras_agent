@@ -37,6 +37,8 @@ export async function eventosDeRango(ymdInicio, dias = 7) {
  *   duracionMin        default 60
  *   fechaFin           para eventos de varios días
  *   lugar, notas, creadoPor
+ *   repetir            {freq:"DAILY|WEEKLY|MONTHLY|YEARLY", dias:["TU"..]|null}
+ *                      la serie termina el 31/dic del año de la fecha
  */
 export async function crear(e) {
   let start;
@@ -66,9 +68,37 @@ export async function crear(e) {
       description: descripcion || undefined,
       start,
       end,
+      recurrence: reglaRecurrencia(e.repetir, e.fecha),
     },
   });
   return data;
+}
+
+const FREQS = new Set(["DAILY", "WEEKLY", "MONTHLY", "YEARLY"]);
+const DIAS_OK = new Set(["MO", "TU", "WE", "TH", "FR", "SA", "SU"]);
+
+/**
+ * Construye el array `recurrence` de Google (o undefined si no repite).
+ * Cierra la serie el 31 de diciembre del año de la fecha inicial.
+ */
+function reglaRecurrencia(repetir, fechaInicial) {
+  if (!repetir || typeof repetir !== "object") return undefined;
+
+  const freq = String(repetir.freq || "").toUpperCase();
+  if (!FREQS.has(freq)) return undefined;
+
+  const partes = [`FREQ=${freq}`];
+
+  // Días de la semana solo tienen sentido en repetición semanal.
+  if (freq === "WEEKLY" && Array.isArray(repetir.dias)) {
+    const dias = repetir.dias.map((d) => String(d).toUpperCase()).filter((d) => DIAS_OK.has(d));
+    if (dias.length) partes.push(`BYDAY=${dias.join(",")}`);
+  }
+
+  const anio = (fechaInicial || "").slice(0, 4) || String(new Date().getFullYear());
+  partes.push(`UNTIL=${anio}1231T235959Z`);
+
+  return [`RRULE:${partes.join(";")}`];
 }
 
 export async function borrar(eventId) {

@@ -77,7 +77,27 @@ export function confirmacionCreado(evento) {
   const ymd = ymdDeEvento(evento.start);
   const hora = horaDeEvento(evento.start);
   const cuando = hora ? `${etiquetaDia(ymd)} a las ${hora}` : `${etiquetaDia(ymd)} (todo el día)`;
-  return `✅ Agendado: *${evento.summary}* — ${cuando}`;
+  const repite = textoRecurrencia(evento.recurrence);
+  return `✅ Agendado: *${evento.summary}* — ${cuando}${repite ? `\n🔁 ${repite}` : ""}`;
+}
+
+const DIA_LARGO = { MO: "lunes", TU: "martes", WE: "miércoles", TH: "jueves", FR: "viernes", SA: "sábados", SU: "domingos" };
+
+/** Traduce el RRULE de Google a algo legible ("se repite todas las semanas..."). */
+function textoRecurrencia(recurrence) {
+  if (!Array.isArray(recurrence) || !recurrence.length) return "";
+  const rule = recurrence.find((r) => r.startsWith("RRULE:")) || "";
+  const freq = (rule.match(/FREQ=(\w+)/) || [])[1];
+  const byday = (rule.match(/BYDAY=([A-Z,]+)/) || [])[1];
+  const hasta = (rule.match(/UNTIL=(\d{4})/) || [])[1];
+  const finTxt = hasta ? ` (hasta fin de ${hasta})` : "";
+
+  if (byday) {
+    const dias = byday.split(",").map((d) => DIA_LARGO[d] || d).join(" y ");
+    return `Se repite los ${dias}${finTxt}`;
+  }
+  const mapa = { DAILY: "todos los días", WEEKLY: "todas las semanas", MONTHLY: "todos los meses", YEARLY: "todos los años" };
+  return freq && mapa[freq] ? `Se repite ${mapa[freq]}${finTxt}` : "";
 }
 
 export function listaNumerada(eventos) {
@@ -97,6 +117,11 @@ Escribime normal, sin comandos:
 • \`el martes 18hs turno con el pediatra\`
 • \`cumple de Ana el 3 de agosto\`
 • \`reunión de padres jueves de 19 a 21 en el colegio\`
+
+*Actividades que se repiten*
+• \`todos los martes fútbol 18hs\`
+• \`danza lunes y miércoles 17hs\`
+  (se repiten hasta fin de año)
 
 *Agendar desde una foto*
 • Mandá la invitación/flyer con un epígrafe tipo \`agendá esto\` o \`cumple\`
