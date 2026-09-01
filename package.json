@@ -8,7 +8,8 @@
     "start": "node index.js",
     "agenda:auth": "node calendario/obtener-token.js",
     "agenda:probar": "node calendario/probar.js",
-    "agenda:parse": "node calendario/probar.js parse"
+    "agenda:parse": "node calendario/probar.js parse",
+    "gastos:probar": "node gastos/probar.js"
   },
   "engines": {
     "node": ">=20"

@@ -1,13 +1,13 @@
 # Estado del proyecto — Bot de WhatsApp de casa
 
 > Documento de traspaso. Resume qué se construyó, qué decisiones se tomaron, qué
-> bugs se encontraron y qué quedó pendiente. Última actualización: 21/07/2026.
+> bugs se encontraron y qué quedó pendiente. Última actualización: 01/09/2026.
 
 ---
 
 ## 1. Qué es
 
-Un proceso, un número de WhatsApp, **dos agentes** en dos grupos distintos:
+Un proceso, un número de WhatsApp, **tres agentes** en tres grupos distintos:
 
 1. **Lista de compras** (grupo `compras`). Los integrantes escriben lo que
    falta y el bot lo registra; cuando alguien está en el súper, pide la lista.
@@ -15,6 +15,10 @@ Un proceso, un número de WhatsApp, **dos agentes** en dos grupos distintos:
    en un Google Calendar compartido, manda los eventos del día cada mañana y
    el resumen de la semana entrante los domingos a las 20. Ver
    `calendario/README.md`.
+3. **Gastos del mes** (grupo de gastos, módulo `gastos/`). Guarda los gastos
+   fijos que se pagan todos los meses, avisa antes de cada vencimiento, insiste
+   si no se pagaron y los marca pagados cuando alguien manda el comprobante (que
+   queda archivado en disco). Ver `gastos/README.md`.
 
 Comparten proceso por obligación, no por gusto: una credencial de Baileys = una
 sesión = un proceso. Dos procesos con la misma carpeta `auth/` se expulsan en
@@ -31,6 +35,7 @@ loop. Ver sección 5, `conflict: replaced`.
 | Número vinculado | **5491153870378 (número personal de Mariano)** |
 | Grupo compras | `compras` → JID `120363429159326223@g.us` |
 | Grupo agenda | (completar `TARGET_GROUP_FAMILIA` en el `.env`) |
+| Grupo gastos | (completar `TARGET_GROUP_GASTOS` en el `.env`) |
 
 Deploy: subir archivos a GitHub por la web → `git pull` en la EC2 → `systemctl restart`.
 
@@ -41,16 +46,18 @@ index.js       conexión a WhatsApp (Baileys), ruteo por grupo, reconexión
 store.js       persistencia de la lista en lista.json
 llm.js         interpretación de lenguaje natural con la API de Claude
 calendario/    módulo de agenda familiar (ver su propio README)
+gastos/        módulo de gastos mensuales (ver su propio README)
 .env           configuración (NO está en git)
 ```
 
 `index.js` rutea por JID: si el mensaje viene del grupo familiar se lo pasa a
-`calendario/agent.js` y sigue de largo; si no, entra al flujo de la lista.
+`calendario/agent.js`, si viene del grupo de gastos a `gastos/agent.js`, y sigue
+de largo; si no, entra al flujo de la lista.
 
-El módulo de agenda está pensado para **fallar solo**. Si le falta
-configuración de Google arranca deshabilitado y lo avisa en el log; si la API
-de Google falla, lo reporta en el grupo sin tirar el proceso. Para apagarlo:
-vaciar `TARGET_GROUP_FAMILIA` y reiniciar.
+Los módulos de agenda y gastos están pensados para **fallar solos**. Si le falta
+configuración arrancan deshabilitados y lo avisan en el log; si una API externa
+falla, lo reportan en el grupo sin tirar el proceso. Para apagarlos: vaciar
+`TARGET_GROUP_FAMILIA` / `TARGET_GROUP_GASTOS` y reiniciar.
 
 **Por qué Baileys y no la API oficial:** la WhatsApp Cloud API **no soporta grupos**,
 solo chats 1-a-1. Baileys usa el protocolo de WhatsApp Web (vinculación por QR), que
@@ -141,7 +148,16 @@ Correr `npm start` sobre SSH hacía perder los logs al desconectarse, dos veces.
    `TARGET_GROUP_FAMILIA` y `npm install` en la EC2 (`googleapis`, `node-cron`
    son dependencias nuevas). Paso a paso en `calendario/README.md`.
    **Sin configurar, el módulo arranca apagado y no molesta a nadie.**
-6. **Vigilar la RAM.** Ahora el proceso hace dos cosas. Si más adelante se
+6. **Configurar el bot de gastos** (01/09). El código está puesto y probado con
+   `npm run gastos:probar` (un mes entero con reloj falso, sin WhatsApp). Falta
+   la configuración real: crear el grupo, agregar el bot, sacar el JID con
+   `LISTAR_GRUPOS=true` y ponerlo en `TARGET_GROUP_GASTOS`. No hay dependencias
+   nuevas. Paso a paso en `gastos/README.md`.
+   **Sin configurar, el módulo arranca apagado y no molesta a nadie.**
+7. **Backup de `comprobantes/`.** Los comprobantes se guardan en el disco de la
+   EC2 y no están en git. Si la instancia se pierde, se pierden. Vale un `rsync`
+   o un `aws s3 sync` mensual a S3.
+8. **Vigilar la RAM.** Ahora el proceso hace dos cosas. Si más adelante se
    separan en dos procesos (número dedicado), chequear `free -m` antes: cada
    instancia de Baileys anda en 150–250 MB y el número personal tiene ~200
    grupos.
@@ -161,6 +177,13 @@ Correr `npm start` sobre SSH hacía perder los logs al desconectarse, dos veces.
 - Editar eventos ("corré el turno del dentista a las 5")
 - Recurrencias ("todos los martes fútbol")
 
+**Gastos**
+
+- Recordatorio por privado al responsable de cada gasto
+- Vencimientos no mensuales (bimestral, anual)
+- Exportar el año a CSV
+- Avisar el aumento respecto del mes anterior
+
 ## 9. Comandos operativos
 
 ```bash
@@ -168,7 +191,9 @@ sudo systemctl status lista-compras-bot      # estado
 sudo systemctl restart lista-compras-bot     # reiniciar
 journalctl -u lista-compras-bot -f           # logs en vivo
 LOG_BAILEYS=warn npm start                   # ver el ruido interno (con el servicio parado)
-cat ~/compras_agent/lista.json               # datos crudos
+cat ~/compras_agent/lista.json               # datos crudos de la lista
+cat ~/compras_agent/gastos.json              # datos crudos de los gastos
+npm run gastos:probar                        # probar el bot de gastos sin WhatsApp
 ```
 
 **Recordatorio:** nunca `npm start` y el servicio a la vez.

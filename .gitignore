@@ -1,6 +1,8 @@
 node_modules/
 auth/
 lista.json
+gastos.json
+comprobantes/
 .env
 .DS_Store
 service-account.json

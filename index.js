@@ -9,6 +9,7 @@ import makeWASocket, {
   downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
+import { readFileSync } from "fs";
 import qrcode from "qrcode-terminal";
 import pino from "pino";
 
@@ -20,6 +21,12 @@ import { interpretar, claudeDisponible } from "./llm.js";
 import { crearAgente } from "./calendario/agent.js";
 import * as agenda from "./calendario/scheduler.js";
 import { calendarioHabilitado, faltantes } from "./calendario/config.js";
+
+// Módulo de gastos mensuales. Vive en gastos/ y atiende un TERCER grupo.
+// Misma regla que la agenda: si le falta configuración se apaga solo.
+import { crearAgente as crearAgenteGastos } from "./gastos/agent.js";
+import * as gastosCron from "./gastos/scheduler.js";
+import { gastosHabilitado, faltantes as faltantesGastos } from "./gastos/config.js";
 
 // libsignal escribe ruido de sesiones con console.log directo (no pasa por pino).
 // Lo filtramos para poder leer la consola. Con LOG_BAILEYS=warn se muestra todo.
@@ -69,6 +76,8 @@ const PREFIX = process.env.BOT_PREFIX || "!";
 const TARGET_GROUP = process.env.TARGET_GROUP || "";
 // Grupo de la agenda familiar. Vacío = módulo apagado.
 const TARGET_GROUP_FAMILIA = process.env.TARGET_GROUP_FAMILIA || "";
+// Grupo de los gastos del mes. Vacío = módulo apagado.
+const TARGET_GROUP_GASTOS = process.env.TARGET_GROUP_GASTOS || "";
 // Por defecto NO se exige prefijo: el grupo es dedicado a compras.
 const REQUIERE_PREFIJO = process.env.REQUIERE_PREFIJO === "true";
 // Mensajes más largos que esto no se consideran comandos (evita gastar API).
@@ -247,6 +256,34 @@ function imagenDelMensaje(msg) {
   );
 }
 
+// Igual que imagenDelMensaje pero incluye documentos (los comprobantes suelen
+// venir en PDF). Devuelve { nodo, mime, nombre } o null.
+function archivoDelMensaje(msg) {
+  const m = msg.message || {};
+  const interno = m.ephemeralMessage?.message || m.viewOnceMessage?.message || m.viewOnceMessageV2?.message || {};
+  const doc = m.documentMessage || m.documentWithCaptionMessage?.message?.documentMessage || interno.documentMessage;
+  if (doc) {
+    return { mime: doc.mimetype || "application/pdf", nombre: doc.fileName || "" };
+  }
+  const img = imagenDelMensaje(msg);
+  if (img) return { mime: img.mimetype || "image/jpeg", nombre: "" };
+  return null;
+}
+
+// ID del mensaje al que se está respondiendo (para asociar un comprobante al
+// recordatorio que lo pidió).
+function citadoDelMensaje(msg) {
+  const m = msg.message || {};
+  const ctx =
+    m.extendedTextMessage?.contextInfo ||
+    m.imageMessage?.contextInfo ||
+    m.documentMessage?.contextInfo ||
+    m.documentWithCaptionMessage?.message?.documentMessage?.contextInfo ||
+    m.videoMessage?.contextInfo ||
+    m.ephemeralMessage?.message?.extendedTextMessage?.contextInfo;
+  return ctx?.stanzaId || null;
+}
+
 // ---------- Conexión a WhatsApp ----------
 
 let reconectando = false;
@@ -312,6 +349,35 @@ async function iniciar() {
       })
     : null;
 
+  // ---------- Gastos del mes ----------
+  // enviarTexto devuelve el mensaje enviado a propósito: el agente guarda el id
+  // de cada recordatorio para reconocer el comprobante que le responden.
+  const agenteGastos = gastosHabilitado
+    ? crearAgenteGastos({
+        wa: {
+          async enviarTexto(jid, texto) {
+            const enviado = await sock.sendMessage(jid, { text: texto });
+            recordarPropio(enviado?.key?.id);
+            return enviado;
+          },
+          async reaccionar(key, emoji) {
+            await sock.sendMessage(key.remoteJid, { react: { text: emoji, key } });
+          },
+          async enviarArchivo(jid, { ruta, mime, nombre, caption }) {
+            const enviado = await sock.sendMessage(jid, {
+              document: readFileSync(ruta),
+              mimetype: mime || "application/octet-stream",
+              fileName: nombre || "comprobante",
+              caption,
+            });
+            recordarPropio(enviado?.key?.id);
+            return enviado;
+          },
+        },
+        grupoJid: TARGET_GROUP_GASTOS,
+      })
+    : null;
+
   async function listarGrupos() {
     for (let intento = 1; intento <= 3; intento++) {
       try {
@@ -346,6 +412,7 @@ async function iniciar() {
       // Los cron de la agenda se paran junto con la conexión; iniciar() los
       // vuelve a crear al reconectar. Es idempotente, no duplica envíos.
       agenda.detener();
+      gastosCron.detener();
 
       if (code === DisconnectReason.loggedOut) {
         console.log("\n🚪 Sesión cerrada desde el celular. Borrá auth/ y re-escaneá el QR.\n");
@@ -389,6 +456,20 @@ async function iniciar() {
       } else {
         console.log(`📅 Agenda familiar: apagada (falta ${faltantes().join(", ")})`);
       }
+
+      if (agenteGastos) {
+        console.log(`💸 Gastos del mes: activo en ${TARGET_GROUP_GASTOS}`);
+        // Mismo cuidado que con la agenda: un cron mal escrito no puede
+        // llevarse puesto el resto del bot.
+        try {
+          gastosCron.iniciar(agenteGastos);
+        } catch (e) {
+          console.error("❌ No pude programar los recordatorios de gastos:", e?.message || e);
+          console.error("   Los comandos del grupo siguen funcionando. Revisá TZ_GASTOS y CRON_GASTOS.");
+        }
+      } else {
+        console.log(`💸 Gastos del mes: apagado (falta ${faltantesGastos().join(", ")})`);
+      }
     }
   });
 
@@ -401,22 +482,60 @@ async function iniciar() {
       if (!jid) continue;
 
       const esFamilia = Boolean(agenteCalendario) && jid === TARGET_GROUP_FAMILIA;
+      const esGastos = Boolean(agenteGastos) && jid === TARGET_GROUP_GASTOS;
 
-      // Solo los grupos objetivo. Ojo: el grupo de la agenda tiene que pasar
-      // este filtro aunque no sea TARGET_GROUP.
-      if (!esFamilia && TARGET_GROUP && jid !== TARGET_GROUP) continue;
+      // Solo los grupos objetivo. Ojo: los grupos de agenda y gastos tienen que
+      // pasar este filtro aunque no sean TARGET_GROUP.
+      if (!esFamilia && !esGastos && TARGET_GROUP && jid !== TARGET_GROUP) continue;
 
       // Nunca procesamos nuestras propias respuestas (protección anti-loop).
       if (idsPropios.has(msg.key.id)) continue;
 
       const texto = textoDelMensaje(msg);
-      if (!texto) continue;
+      // En gastos un comprobante puede venir sin una sola letra de epígrafe.
+      const adjunto = esGastos ? archivoDelMensaje(msg) : null;
+      if (!texto && !adjunto) continue;
 
       // Descartamos historial viejo, no comandos en vivo.
       const ts = timestampDe(msg);
       if (ts && Math.floor(Date.now() / 1000) - ts > MAX_ANTIGUEDAD_SEG) continue;
 
       const autor = (msg.key.participant || jid).split("@")[0];
+
+      // ---- Rama gastos: el módulo se encarga y responde por su cuenta ----
+      if (esGastos) {
+        // Descargador lazy: el agente solo baja el archivo si decidió que es un
+        // comprobante. Una foto suelta en el grupo no se descarga.
+        const archivo = adjunto
+          ? {
+              mime: adjunto.mime,
+              nombre: adjunto.nombre,
+              descargar: async () => {
+                const buffer = await downloadMediaMessage(
+                  msg,
+                  "buffer",
+                  {},
+                  { logger, reuploadRequest: sock.updateMediaMessage }
+                );
+                return buffer.toString("base64");
+              },
+            }
+          : null;
+
+        try {
+          const actuo = await agenteGastos.manejarMensaje({
+            texto,
+            autor: msg.pushName || autor,
+            key: msg.key,
+            archivo,
+            citadoId: citadoDelMensaje(msg),
+          });
+          if (actuo) console.log(`💸 "${(texto || "[archivo]").slice(0, 50)}" (de ${autor})`);
+        } catch (err) {
+          console.error(`❌ Error de gastos:`, err?.message || err);
+        }
+        continue;
+      }
 
       // ---- Rama agenda: el módulo se encarga y responde por su cuenta ----
       if (esFamilia) {
